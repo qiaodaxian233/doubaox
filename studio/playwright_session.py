@@ -53,6 +53,59 @@ class AccountSession:
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.user_data_dir = ST.PROFILES_DIR / account.id / "chrome_data"
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
+        # 调试日志回调:worker / UI 通过 set_log_callback 注入,导航事件和填写诊断会回吐到这里
+        self._log_cb: Optional[Callable[[str], None]] = None
+
+    def set_log_callback(self, cb: Optional[Callable[[str], None]]):
+        """让调用方接收来自 session 内部的调试日志(导航/失败/快照路径等)。"""
+        self._log_cb = cb
+
+    def _log(self, msg: str):
+        if self._log_cb:
+            try: self._log_cb(f"[{self.account.name}/调试] {msg}")
+            except Exception: pass
+
+    def _attach_nav_logger(self):
+        """给当前 _page 挂导航/load 监听,记录任何 URL 跳转 — 检测"点生成后页面刷新"用。
+        每个 page 对象只挂一次(挂在 page._doubaox_nav_attached 标记上)。"""
+        page = self._page
+        if not page: return
+        try:
+            if getattr(page, "_doubaox_nav_attached", False):
+                return
+        except Exception:
+            pass
+
+        def on_framenavigated(frame):
+            try:
+                if frame == page.main_frame:
+                    self._log(f"页面导航 → {frame.url}")
+            except Exception: pass
+
+        def on_load():
+            try:
+                self._log(f"页面 load 完成 url={page.url}")
+            except Exception: pass
+
+        def on_requestfailed(req):
+            try:
+                # 只关心主文档 / xhr 失败
+                if req.resource_type in ("document", "xhr", "fetch"):
+                    self._log(
+                        f"请求失败 {req.method} {req.url[:120]} - {req.failure}"
+                    )
+            except Exception: pass
+
+        try: page.on("framenavigated", on_framenavigated)
+        except Exception: pass
+        try: page.on("load", on_load)
+        except Exception: pass
+        try: page.on("requestfailed", on_requestfailed)
+        except Exception: pass
+        try:
+            page._doubaox_nav_attached = True  # type: ignore
+        except Exception:
+            pass
 
     def start(self, headless: bool = False):
         """启动 Chromium。headless=False(默认)便于扫码登录。"""
@@ -93,6 +146,7 @@ class AccountSession:
             self._page.on("close", lambda _p=None: self._on_page_closed())
         except Exception:
             pass
+        self._attach_nav_logger()
         self.status.online = True
         self.status.error = ""
 
@@ -124,6 +178,7 @@ class AccountSession:
             self._page.on("close", lambda _p=None: self._on_page_closed())
         except Exception:
             pass
+        self._attach_nav_logger()
         self._browser_attached = browser  # 保引用避免 GC
         self.status.online = True
         self.status.current_url = self._page.url if self._page else ""
@@ -139,6 +194,7 @@ class AccountSession:
         try:
             if self._ctx and self._ctx.pages:
                 self._page = self._ctx.pages[0]
+                self._attach_nav_logger()
                 return
         except Exception:
             pass
@@ -195,6 +251,290 @@ class AccountSession:
         except Exception as e:
             self.status.error = str(e)
             return False
+
+    def fill_with_diagnostics(self, selector_chain: str, text: str) -> dict:
+        """诊断版填写:返回详细结果字典而不是简单 bool。
+
+        失败时调用方能拿到:
+          - candidates: 每个分号分隔的 selector 在页面里匹配到几个元素
+          - chosen_selector / chosen_info: 最终被 click 的那个元素详情(tag/id/可见/可编辑)
+          - url_before / url_after: 操作前后的 page.url(检测 click 触发了页面跳转)
+          - typed_value / typed_length: 填完后 readback,确认 type 是不是真写进去了
+          - error: 异常或失败原因
+        """
+        info = {
+            "ok": False, "error": "",
+            "url_before": "", "url_after": "",
+            "candidates": [], "chosen_selector": "", "chosen_info": {},
+            "typed_value": "", "typed_length": 0,
+        }
+        page = self._page
+        if not page:
+            info["error"] = "page 不存在(session 未启动?)"
+            return info
+        try:
+            info["url_before"] = page.url
+        except Exception: pass
+
+        # 1. 逐个 selector 探匹配数,选第一个有命中的
+        selectors = [s.strip() for s in selector_chain.split(",") if s.strip()]
+        chosen = None
+        for sel in selectors:
+            try:
+                count = len(page.query_selector_all(sel))
+            except Exception:
+                count = -1
+            info["candidates"].append({"selector": sel[:60], "count": count})
+            if chosen is None and isinstance(count, int) and count > 0:
+                chosen = sel
+        if not chosen:
+            info["error"] = "所有 selector 在页面上都 0 命中"
+            try: info["url_after"] = page.url
+            except Exception: pass
+            return info
+        info["chosen_selector"] = chosen
+
+        # 2. 抓首个命中元素详情
+        try:
+            el = page.query_selector(chosen)
+            if el:
+                ci = {}
+                try: ci["tag"] = el.evaluate("e => e.tagName")
+                except Exception: ci["tag"] = "?"
+                try: ci["id"] = (el.get_attribute("id") or "")[:40]
+                except Exception: ci["id"] = ""
+                try: ci["classes"] = (el.get_attribute("class") or "")[:80]
+                except Exception: ci["classes"] = ""
+                try: ci["placeholder"] = (el.get_attribute("placeholder") or "")[:60]
+                except Exception: ci["placeholder"] = ""
+                try: ci["visible"] = el.is_visible()
+                except Exception: ci["visible"] = None
+                try: ci["disabled"] = el.is_disabled()
+                except Exception: ci["disabled"] = None
+                try: ci["editable"] = el.is_editable()
+                except Exception: ci["editable"] = None
+                try:
+                    bb = el.bounding_box() or {}
+                    ci["bbox"] = {k: round(bb[k]) if isinstance(bb.get(k), (int, float)) else bb.get(k)
+                                  for k in ("x", "y", "width", "height") if k in bb}
+                except Exception: ci["bbox"] = {}
+                info["chosen_info"] = ci
+        except Exception as e:
+            info["chosen_info"] = {"probe_error": str(e)}
+
+        # 3. click + type,带跳转检测
+        try:
+            el = page.wait_for_selector(chosen, timeout=5000)
+            if not el:
+                info["error"] = "wait_for_selector 返回 None(刚才探到但 5s 内又消失了)"
+                try: info["url_after"] = page.url
+                except Exception: pass
+                return info
+            try:
+                el.click(timeout=3000)
+            except Exception as ce:
+                info["error"] = f"click 失败: {ce}"
+                try: info["url_after"] = page.url
+                except Exception: pass
+                return info
+            # click 完短等,捕获潜在跳转
+            try: page.wait_for_load_state("domcontentloaded", timeout=800)
+            except Exception: pass
+            try: info["url_after"] = page.url
+            except Exception: pass
+            if info["url_after"] and info["url_before"] and info["url_after"] != info["url_before"]:
+                info["error"] = (
+                    f"click 后页面已跳到 {info['url_after']},原输入框可能已不存在"
+                )
+                return info
+            # 真 type
+            try:
+                page.keyboard.type(text, delay=10)
+            except Exception as te:
+                info["error"] = f"keyboard.type 失败: {te}"
+                return info
+            try: info["url_after"] = page.url
+            except Exception: pass
+            # 4. readback:确认 type 进去了
+            try:
+                el2 = page.query_selector(chosen)
+                if el2:
+                    v = el2.evaluate(
+                        "e => (e.value !== undefined && e.value !== null) "
+                        "? e.value : (e.textContent || '')"
+                    )
+                    info["typed_value"] = (v or "")[:200]
+                    info["typed_length"] = len(v or "")
+            except Exception as re_:
+                info.setdefault("chosen_info", {})["readback_error"] = str(re_)
+            # 成功条件:readback 长度 >= 输入长度的一半(允许空白整理)
+            info["ok"] = info["typed_length"] >= max(1, len(text) // 2)
+            if not info["ok"] and not info["error"]:
+                info["error"] = (
+                    f"type 完成但 readback 只有 {info['typed_length']}/{len(text)} 字,"
+                    f"很可能 click 时焦点没真正进输入框,或者元素是只读"
+                )
+        except Exception as e:
+            info["error"] = f"诊断 fill 过程异常: {e}"
+            try: info["url_after"] = page.url
+            except Exception: pass
+        self.status.error = info["error"]
+        return info
+
+    def snapshot_page(self, label: str = "snapshot") -> dict:
+        """生成一份页面调试快照(截图 + HTML + DOM probe)写到 ~/.doubao-studio/debug/<label>_<ts>/。
+
+        返回 dict 含 dir / files / url / title / probe(textareas/buttons/file_inputs/error_banners)。
+        调用方可以把 dir 路径报给用户让其打开。
+        """
+        info = {
+            "label": label, "url": "", "title": "",
+            "html_len": 0, "files": [], "error": "", "dir": "",
+        }
+        if not self._page:
+            info["error"] = "page 不存在"
+            return info
+        try:
+            info["url"] = self._page.url
+        except Exception: pass
+        try:
+            info["title"] = self._page.title()
+        except Exception: pass
+
+        import time as _t
+        debug_dir = ST.APP_DIR / "debug" / f"{label}_{int(_t.time())}"
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            info["dir"] = str(debug_dir)
+        except Exception as e:
+            info["error"] = f"建调试目录失败: {e}"
+            return info
+
+        # 1. 截图(不强制 full_page,避免长页 OOM)
+        try:
+            png = debug_dir / "screenshot.png"
+            self._page.screenshot(path=str(png), full_page=False)
+            info["files"].append(str(png))
+        except Exception as e:
+            info["screenshot_error"] = str(e)
+
+        # 2. HTML dump(完整 DOM)
+        try:
+            html = self._page.content()
+            info["html_len"] = len(html)
+            html_path = debug_dir / "page.html"
+            html_path.write_text(html, encoding="utf-8")
+            info["files"].append(str(html_path))
+        except Exception as e:
+            info["html_error"] = str(e)
+
+        # 3. 在页面里跑一段轻量 DOM probe,看几个关键控件的状态
+        probe_js = r"""
+        (() => {
+          const out = {
+            input_textareas: 0,
+            input_editables: 0,
+            visible_textareas: [],
+            visible_editables: [],
+            send_buttons: [],
+            file_inputs: 0,
+            error_banners: [],
+            visible_login_hints: [],
+          };
+          document.querySelectorAll('textarea').forEach(t => {
+            out.input_textareas++;
+            const r = t.getBoundingClientRect();
+            if (r.width >= 80 && r.height >= 20 && t.offsetParent) {
+              out.visible_textareas.push({
+                id: t.id || '', name: t.name || '',
+                placeholder: (t.placeholder || '').slice(0,60),
+                cls: (t.className || '').toString().slice(0,80),
+                disabled: t.disabled, readonly: t.readOnly,
+                w: Math.round(r.width), h: Math.round(r.height),
+              });
+            }
+          });
+          document.querySelectorAll('[contenteditable="true"]').forEach(t => {
+            out.input_editables++;
+            const r = t.getBoundingClientRect();
+            if (r.width >= 80 && r.height >= 20 && t.offsetParent) {
+              out.visible_editables.push({
+                tag: t.tagName, id: t.id || '',
+                cls: (t.className || '').toString().slice(0,80),
+                w: Math.round(r.width), h: Math.round(r.height),
+              });
+            }
+          });
+          out.file_inputs = document.querySelectorAll('input[type="file"]').length;
+          document.querySelectorAll('button, [role="button"]').forEach(b => {
+            const text = (b.innerText || '').trim().slice(0, 30);
+            const aria = b.getAttribute('aria-label') || '';
+            const testid = b.getAttribute('data-testid') || '';
+            if (/send|发送|生成|提交|submit/i.test(text + aria + testid)) {
+              out.send_buttons.push({
+                text, aria, testid,
+                disabled: b.disabled || b.getAttribute('aria-disabled') === 'true',
+              });
+            }
+          });
+          document.querySelectorAll('[class*="error"],[class*="banner"],[role="alert"]').forEach(e => {
+            if (!e.offsetParent) return;
+            const t = (e.innerText || '').trim().slice(0, 100);
+            if (t) out.error_banners.push(t);
+          });
+          out.error_banners = [...new Set(out.error_banners)].slice(0, 5);
+          document.querySelectorAll('button, a').forEach(e => {
+            const t = (e.innerText || '').trim();
+            if (/^(登录|Login|Sign in|Sign In)$/i.test(t) && e.offsetParent) {
+              out.visible_login_hints.push(t);
+            }
+          });
+          out.visible_login_hints = [...new Set(out.visible_login_hints)].slice(0, 3);
+          return out;
+        })()
+        """
+        try:
+            probe = self._page.evaluate(probe_js)
+            info["probe"] = probe
+            import json as _j
+            (debug_dir / "probe.json").write_text(
+                _j.dumps(probe, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            info["files"].append(str(debug_dir / "probe.json"))
+        except Exception as e:
+            info["probe_error"] = str(e)
+
+        # 4. 总览写个 summary.txt 方便用户直接打开看
+        try:
+            lines = [
+                f"label: {label}",
+                f"url: {info['url']}",
+                f"title: {info['title']}",
+                f"html_len: {info['html_len']}",
+            ]
+            p = info.get("probe", {})
+            if p:
+                lines.append("--- DOM Probe ---")
+                lines.append(f"  textareas:        {p.get('input_textareas')} (visible: {len(p.get('visible_textareas') or [])})")
+                lines.append(f"  contenteditables: {p.get('input_editables')} (visible: {len(p.get('visible_editables') or [])})")
+                lines.append(f"  file inputs:      {p.get('file_inputs')}")
+                lines.append(f"  send buttons:     {len(p.get('send_buttons') or [])}")
+                if p.get("send_buttons"):
+                    for b in p["send_buttons"][:5]:
+                        lines.append(f"    - {b!r}")
+                if p.get("visible_textareas"):
+                    lines.append("  visible textareas:")
+                    for t in p["visible_textareas"][:5]:
+                        lines.append(f"    - {t!r}")
+                if p.get("error_banners"):
+                    lines.append(f"  error banners:    {p['error_banners']}")
+                if p.get("visible_login_hints"):
+                    lines.append(f"  login buttons visible: {p['visible_login_hints']}")
+            (debug_dir / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
+            info["files"].append(str(debug_dir / "summary.txt"))
+        except Exception:
+            pass
+        return info
 
     def click(self, selector: str) -> bool:
         if not self._page: return False

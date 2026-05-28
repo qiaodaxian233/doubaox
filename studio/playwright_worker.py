@@ -122,6 +122,9 @@ class Worker(QObject):
             from .playwright_session import get_pool
             pool = get_pool()
             sess = pool.get_or_create(acc)
+            # 桥接 session 内部调试日志 → UI log(挂一次就够,setter 幂等)
+            try: sess.set_log_callback(self.log.emit)
+            except Exception: pass
             if not sess.status.online:
                 if acc.attach_cdp_url:
                     self.log.emit(f"[{acc.name}] 挂载 CDP {acc.attach_cdp_url}...")
@@ -195,6 +198,9 @@ class Worker(QObject):
         self.log.emit(f"[{task.title}] 派发给 {acc.name}")
         try:
             session = get_pool().get_or_create(acc)
+            # 把 session 的内部调试日志(导航/快照)桥接到 worker log,UI 看得见
+            try: session.set_log_callback(self.log.emit)
+            except Exception: pass
             if not session.status.online:
                 session.start(headless=False)
                 self.log.emit(f"[{acc.name}] 浏览器已启动")
@@ -287,13 +293,60 @@ class Worker(QObject):
                         session.fill_clipboard_paste(profile.input_box, task.prompt)
                         self._copy_to_clipboard(task.prompt)
             elif profile.input_box:
-                # 普通模式:直接填 prompt
-                ok = session.fill_clipboard_paste(profile.input_box, task.prompt)
-                if not ok:
-                    self.log.emit(f"[{task.title}] 自动填 prompt 失败,请在浏览器手动粘贴(已在剪贴板)")
-                    self._copy_to_clipboard(task.prompt)
-                else:
+                # 普通模式:走诊断版,失败时把详情吐到 log + 写快照
+                diag = session.fill_with_diagnostics(profile.input_box, task.prompt)
+                if diag.get("ok"):
                     self.log.emit(f"[{task.title}] 已自动填入 prompt ({prompt_len} 字)")
+                else:
+                    self.log.emit(f"[{task.title}] 自动填 prompt 失败,请在浏览器手动粘贴(已在剪贴板)")
+                    # === 详细诊断 ===
+                    cands = diag.get("candidates") or []
+                    if cands:
+                        summary = "; ".join(
+                            f"{c['selector'][:32]}({c['count']})"
+                            for c in cands
+                        )
+                        self.log.emit(f"[{task.title}] 选择器命中数: {summary}")
+                    chosen = diag.get("chosen_selector") or ""
+                    ci = diag.get("chosen_info") or {}
+                    if chosen:
+                        self.log.emit(
+                            f"[{task.title}] 取到的元素: tag={ci.get('tag')} "
+                            f"id={ci.get('id')} visible={ci.get('visible')} "
+                            f"disabled={ci.get('disabled')} editable={ci.get('editable')}"
+                        )
+                        if ci.get("placeholder"):
+                            self.log.emit(f"[{task.title}] 元素 placeholder: {ci['placeholder']!r}")
+                    ub, ua = diag.get("url_before") or "", diag.get("url_after") or ""
+                    if ub != ua:
+                        self.log.emit(f"[{task.title}] ⚠ click 触发了页面跳转: {ub} → {ua}")
+                    else:
+                        self.log.emit(f"[{task.title}] url 未变: {ua}")
+                    self.log.emit(
+                        f"[{task.title}] readback: typed_length={diag.get('typed_length')} "
+                        f"error={diag.get('error')!r}"
+                    )
+                    # 写完整快照(截图 + DOM + probe)
+                    try:
+                        snap = session.snapshot_page(label=f"fill_fail_{task.id[:8]}")
+                        if snap.get("dir"):
+                            self.log.emit(f"[{task.title}] 调试快照已写到 {snap['dir']}")
+                        probe = snap.get("probe") or {}
+                        if probe:
+                            self.log.emit(
+                                f"[{task.title}] 页面 probe: "
+                                f"textareas={probe.get('input_textareas')}/visible={len(probe.get('visible_textareas') or [])} "
+                                f"editables={probe.get('input_editables')}/visible={len(probe.get('visible_editables') or [])} "
+                                f"file_inputs={probe.get('file_inputs')} "
+                                f"send_btns={len(probe.get('send_buttons') or [])}"
+                            )
+                            if probe.get("error_banners"):
+                                self.log.emit(f"[{task.title}] ⚠ 页面错误提示: {probe['error_banners']}")
+                            if probe.get("visible_login_hints"):
+                                self.log.emit(f"[{task.title}] ⚠ 页面仍可见登录按钮: {probe['visible_login_hints']}")
+                    except Exception as e:
+                        self.log.emit(f"[{task.title}] 快照过程异常: {e}")
+                    self._copy_to_clipboard(task.prompt)
 
             # 6. 上传参考图(若有)— 用 _smart_upload(兼容 GPT 直注入 + 豆包 chooser)
             if task.reference_images and profile.upload_btn:
