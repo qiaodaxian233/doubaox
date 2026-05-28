@@ -89,6 +89,7 @@ def _enqueue_task(project_id: str, task_type: str, backend_id: str,
 class EditorPanel(QFrame):
     """中栏容器。"""
     log = Signal(str)
+    tab_change_requested = Signal(str, str)  # (project_id, tab_name) — 画布双击跳转用
 
     def __init__(self):
         super().__init__()
@@ -106,8 +107,10 @@ class EditorPanel(QFrame):
         self.scenes  = ScenesView(self)
         self.props   = PropsView(self)
         self.eps     = EpisodesView(self)
+        from .ui_canvas import InfiniteCanvasView
+        self.canvas  = InfiniteCanvasView(self)
 
-        for w in (self.empty, self.over, self.chars, self.scenes, self.props, self.eps):
+        for w in (self.empty, self.over, self.chars, self.scenes, self.props, self.eps, self.canvas):
             self.stack.addWidget(w)
             if hasattr(w, "log"):
                 try: w.log.connect(self.log)
@@ -127,10 +130,80 @@ class EditorPanel(QFrame):
             "scenes":     self.scenes,
             "props":      self.props,
             "episodes":   self.eps,
+            "canvas":     self.canvas,
         }
         target = mapping.get(tab, self.over)
         target.load(pid)
         self.stack.setCurrentWidget(target)
+
+    # ---- 画布回调:跳转 + 触发资产生成 ----
+    def open_asset(self, kind: str, asset_id: str):
+        """画布上双击节点 → 跳到对应资产 tab(通过 signal 通知 MainWindow)"""
+        tab_map = {
+            "character": "characters", "scene": "scenes",
+            "prop": "props", "shot": "episodes", "segment": "episodes",
+        }
+        tab = tab_map.get(kind)
+        if tab and self.current_pid:
+            self.tab_change_requested.emit(self.current_pid, tab)
+            self.log.emit(f"跳转到 {tab}")
+
+    def node_action(self, action: str, kind: str, asset_id: str):
+        """画布右键菜单动作 → 委托到对应视图。"""
+        from PySide6.QtWidgets import QApplication
+        if action == "copy_prompt":
+            # 不同 kind 走不同的 prompt 构建逻辑
+            if kind == "character":
+                chars = ST.load_characters(self.current_pid)
+                c = next((x for x in chars if x.id == asset_id), None)
+                if c: self.chars._copy_json(c)
+            elif kind == "scene":
+                scenes = ST.load_scenes(self.current_pid)
+                s = next((x for x in scenes if x.id == asset_id), None)
+                if s: self.scenes._copy_json(s)
+            elif kind == "shot":
+                ep, shot = self._find_shot(asset_id)
+                if shot:
+                    self.eps.current_ep = ep
+                    self.eps.pid = self.current_pid
+                    self.eps._copy_image_prompt(shot)
+        elif action == "gen_gpt":
+            if kind == "character":
+                chars = ST.load_characters(self.current_pid)
+                c = next((x for x in chars if x.id == asset_id), None)
+                if c:
+                    self.chars.pid = self.current_pid
+                    self.chars._gen_triview(c)
+            elif kind == "scene":
+                scenes = ST.load_scenes(self.current_pid)
+                s = next((x for x in scenes if x.id == asset_id), None)
+                if s:
+                    self.scenes.pid = self.current_pid
+                    self.scenes._gen_scene(s)
+            elif kind == "prop":
+                props = ST.load_props(self.current_pid)
+                p = next((x for x in props if x.id == asset_id), None)
+                if p:
+                    self.props.pid = self.current_pid
+                    self.props._gen_prop(p)
+        elif action == "gen_storyboard":
+            ep, shot = self._find_shot(asset_id)
+            if shot:
+                self.eps.current_ep = ep
+                self.eps.pid = self.current_pid
+                self.eps._gen_storyboard_master(shot)
+        elif action == "gen_video":
+            ep, shot = self._find_shot(asset_id)
+            if shot:
+                self.eps.current_ep = ep
+                self.eps.pid = self.current_pid
+                self.eps._gen_shot_video(shot)
+
+    def _find_shot(self, shot_id: str):
+        for ep in ST.list_episodes(self.current_pid):
+            for shot in ep.shots:
+                if shot.id == shot_id: return ep, shot
+        return None, None
 
 
 # =========================================================================

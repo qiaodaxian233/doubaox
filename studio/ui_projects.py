@@ -24,13 +24,15 @@ TAB_CHARACTERS = "characters"
 TAB_SCENES     = "scenes"
 TAB_PROPS      = "props"
 TAB_EPISODES   = "episodes"
+TAB_CANVAS     = "canvas"
 
 TAB_LABELS = [
-    (TAB_OVERVIEW,   "概览",  "📋"),
+    (TAB_OVERVIEW,   "概览",   "📋"),
     (TAB_CHARACTERS, "角色库", "👤"),
     (TAB_SCENES,     "场景库", "🏞"),
     (TAB_PROPS,      "道具库", "📿"),
     (TAB_EPISODES,   "分镜表", "🎬"),
+    (TAB_CANVAS,     "画布",   "🎨"),
 ]
 
 

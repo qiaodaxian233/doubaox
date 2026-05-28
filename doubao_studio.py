@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self.nav.tab_changed.connect(self._on_tab_changed)
         self.nav.project_changed.connect(lambda: self.log.info("项目列表已更新"))
         self.editor.log.connect(self.log.info)
+        self.editor.tab_change_requested.connect(self._on_canvas_tab_request)
         self.assets.log.connect(self.log.info)
 
         # M2: Worker(可用时才启)
@@ -132,6 +133,14 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, pid: str, tab: str):
         self.editor.set_context(pid, tab)
+
+    def _on_canvas_tab_request(self, pid: str, tab: str):
+        """画布双击节点跳到资产 tab,同时左栏导航高亮同步。"""
+        self.editor.set_context(pid, tab)
+        # 同步左栏高亮
+        if self.nav.selected_pid == pid:
+            self.nav.selected_tab = tab
+            self.nav._rebuild_tabs()
 
 
 def main():

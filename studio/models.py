@@ -293,7 +293,12 @@ class Account:
 
     def _maybe_reset(self):
         today = datetime.now().strftime("%Y-%m-%d")
+        if not self.quota_reset_date:
+            # 未初始化 → 标记为今天,但不清零(保留 used,因为可能是刚 load 的累积值)
+            self.quota_reset_date = today
+            return
         if self.quota_reset_date != today:
+            # 真的跨日 → 重置
             self.quota_reset_date = today
             self.daily_quota_used = 0
             self.video_quota_used = 0
