@@ -53,6 +53,10 @@ class SiteProfile:
     # 生成完成的文本标志(中文 GPT 镜像通常出 "图片已创建" 三字)
     # 用 || 分隔多个候选(任一出现即视为完成)
     completion_text_marker: str = ""
+    # fill 成功后自动点发送按钮(让用户改半自动→全自动)
+    # 安全:fill 失败时永远不会点,免得抢用户手动粘贴的 prompt
+    # 想关某个 backend 的自动发送,改成 False 即可
+    auto_send_after_fill: bool = True
 
 
 # === 默认配置 ===

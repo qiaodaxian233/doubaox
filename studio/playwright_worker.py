@@ -244,6 +244,11 @@ class Worker(QObject):
             use_txt_mode = (threshold > 0 and prompt_len > threshold and
                            profile.upload_btn)
 
+            # auto_filled:fill 完且确认进去了 → 后面才能自动点发送
+            # 任何一条 fill 路径失败(包括 readback 长度不对)都不要点送,
+            # 因为用户大概率在手动粘贴,我们再 click 一下就把他还没粘完的东西发出去了
+            auto_filled = False
+
             if use_txt_mode:
                 # TXT 模式:写 .txt 文件 + 智能上传 + 输入框写短指令
                 self.log.emit(
@@ -286,11 +291,15 @@ class Worker(QObject):
                     instruction = getattr(profile, "txt_upload_instruction",
                                           "请严格按附件 TXT 里的内容执行任务。")
                     if profile.input_box:
-                        session.fill_clipboard_paste(profile.input_box, instruction)
+                        ok = session.fill_clipboard_paste(profile.input_box, instruction)
+                        auto_filled = bool(ok)
+                    else:
+                        auto_filled = True  # 不需要输入框,TXT 上完算成功
                 else:
                     self.log.emit(f"[{task.title}] TXT 上传失败,退化到直接填 prompt")
                     if profile.input_box:
-                        session.fill_clipboard_paste(profile.input_box, task.prompt)
+                        ok = session.fill_clipboard_paste(profile.input_box, task.prompt)
+                        auto_filled = bool(ok)
                         self._copy_to_clipboard(task.prompt)
             elif profile.input_box:
                 # 普通模式:走诊断版,失败时把详情吐到 log + 写快照
@@ -303,6 +312,7 @@ class Worker(QObject):
                         f"[{task.title}] 已自动填入 prompt ({prompt_len} 字, "
                         f"方式={method}){nav_tag}"
                     )
+                    auto_filled = True
                 else:
                     self.log.emit(f"[{task.title}] 自动填 prompt 失败,请在浏览器手动粘贴(已在剪贴板)")
                     # === 详细诊断 ===
@@ -396,6 +406,44 @@ class Worker(QObject):
             #   层 1: 配了 download_btn → page.expect_download() + 自动点击
             #   层 2: 配了 result_image_in / result_video_in → 直接抓图片 src 用 requests 下载
             #   层 3: 啥都没配 → 监听 Downloads 目录(等用户手动右键保存)
+
+            # 7b-pre: 自动点发送(只在 fill 确认成功的前提下,免得抢用户手动操作)
+            # 视频任务额外要求 profile 显式允许,免得一不小心烧了珍贵的视频额度
+            auto_send_ok = getattr(profile, "auto_send_after_fill", True)
+            if (auto_filled and profile.send_btn and auto_send_ok):
+                # 给 SPA 一点时间把 send 按钮从 disabled 变 enabled(React state 同步)
+                try:
+                    page = session.page()
+                    if page:
+                        # 用 :not([disabled]):not([aria-disabled="true"]) 等可点击状态
+                        first_send_sel = profile.send_btn.split(',')[0].strip()
+                        try:
+                            page.wait_for_selector(
+                                f'{first_send_sel}:not([disabled])', timeout=5000
+                            )
+                        except Exception:
+                            # 没等到也试一下 — 有些镜像 disabled 属性不规范
+                            pass
+                        time.sleep(0.4)
+                except Exception: pass
+                clicked = False
+                last_err = None
+                for ssel in [s.strip() for s in profile.send_btn.split(',') if s.strip()]:
+                    try:
+                        session.click(ssel)
+                        clicked = True
+                        self.log.emit(f"[{task.title}] 已自动点发送 ({ssel[:40]})")
+                        break
+                    except Exception as e:
+                        last_err = e
+                        continue
+                if not clicked:
+                    self.log.emit(
+                        f"[{task.title}] 自动点发送失败,请手动点 ({last_err})"
+                    )
+            elif not auto_filled and profile.send_btn:
+                self.log.emit(f"[{task.title}] (fill 没成功,跳过自动点发送 — 避免抢你手动操作)")
+
             self.log.emit(f"[{task.title}] 等生成完成 + 取产物...")
             session_downloads = session.downloads_dir
             os_downloads = self._guess_os_downloads()
