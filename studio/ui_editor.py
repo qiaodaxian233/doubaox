@@ -1023,7 +1023,7 @@ class EpisodesView(QFrame):
         if prev:
             start_t = prev.start_time + prev.duration
         shot = Shot(episode_id=self.current_ep.id, number=next_n,
-                    start_time=start_t, duration=2.0)
+                    start_time=start_t, duration=2.5)
         if prev and prev.transition_anchor:
             shot.action = f"承接上镜:{prev.transition_anchor}"
         self.current_ep.shots.append(shot)

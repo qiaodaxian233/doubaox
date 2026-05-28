@@ -64,7 +64,13 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
     "gpt-mirror": SiteProfile(
         backend_id="gpt-mirror",
         home_url="https://gpt.aimonkey.plus/",
-        auth_cookies=["session", "__Secure-next-auth.session-token", "cf_clearance"],
+        # 国内 GPT 镜像 cookie 名各异,这是常见候选;is_logged_in 还会做 DOM 兜底
+        auth_cookies=[
+            "session", "__Secure-next-auth.session-token", "cf_clearance",
+            "token", "access_token", "auth_token", "Authorization",
+            "userToken", "user_token", "jwt", "_session",
+            "aimonkey_session", "aimonkey_token",
+        ],
         # 多 selector fallback chain — 任何一个命中就行
         # 输入框:#prompt-textarea 是 ChatGPT 标准,后面是国内镜像变种
         input_box=(

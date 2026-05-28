@@ -250,13 +250,69 @@ class AccountSession:
         return self.set_input_files(upload_selector, [target])
 
     def is_logged_in(self, cookie_names: list) -> bool:
+        """双层检测:cookie 匹配 > DOM heuristic 兜底 > 乐观默认。
+
+        cookie_names 经验值不一定准(很多国内镜像用 token/access_token/jwt 等),
+        所以单层硬匹配会误判。这里:
+          1. cookie 命中任一名字 → 已登录 ✓
+          2. 没命中但 DOM 里没有可见"登录"按钮 → 视为已登录(乐观)
+          3. DOM 里有可见登录按钮 → 真未登录
+        宁可放假阳性进任务跑,也不要阻塞 60 秒等用户。
+        """
         if not self._ctx: return False
         try:
-            cookies = self._ctx.cookies()
-            names = {c.get("name", "") for c in cookies}
-            ok = any(c in names for c in cookie_names)
-            self.status.logged_in = ok
-            return ok
+            # Layer 1: cookie 名匹配
+            if cookie_names:
+                try:
+                    cookies = self._ctx.cookies()
+                    names = {c.get("name", "") for c in cookies}
+                    # 用户实测过的精确名 + 通用候选
+                    extended = list(cookie_names) + [
+                        "token", "access_token", "auth_token", "jwt", "Authorization",
+                        "userToken", "user_token", "auth", "_session",
+                    ]
+                    if any(c in names for c in extended):
+                        self.status.logged_in = True
+                        return True
+                    # cookie 数量 >= 5 (登录态通常会带一堆 cookies)
+                    # 这是个 weak signal,只在有 page 时才用
+                    has_many_cookies = len(cookies) >= 5
+                except Exception:
+                    has_many_cookies = False
+            else:
+                has_many_cookies = False
+
+            # Layer 2: DOM — 没有可见"登录/Login/Sign in"按钮 = 视为已登录
+            page = self._page
+            if not page:
+                # 没法检测,但若 cookies 够多就乐观
+                self.status.logged_in = has_many_cookies
+                return has_many_cookies
+
+            try:
+                for selector in [
+                    'button:has-text("登录"):visible',
+                    'button:has-text("Login"):visible',
+                    'button:has-text("Sign in"):visible',
+                    'button:has-text("Sign In"):visible',
+                    'a:has-text("登录"):visible',
+                    'a:has-text("Login"):visible',
+                    '[data-testid*="login-button"]:visible',
+                ]:
+                    el = page.query_selector(selector)
+                    if el:
+                        try:
+                            if el.is_visible():
+                                return False
+                        except Exception:
+                            pass
+                # 没找到登录按钮 → 已登录
+                self.status.logged_in = True
+                return True
+            except Exception:
+                # DOM 检测异常 → 乐观假设(已经走到这步说明浏览器在跑)
+                self.status.logged_in = True
+                return True
         except Exception:
             return False
 

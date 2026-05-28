@@ -200,17 +200,17 @@ class Worker(QObject):
                 self.log.emit(f"[{acc.name}] 浏览器已启动")
             session.goto(profile.home_url)
 
-            # 4. 检查登录
+            # 4. 检查登录 — 软检测:cookie 命中 OR 没有可见登录按钮 = 视为已登录
+            #    乐观策略:不阻塞任务,直接尝试做;真的没登录后续操作会报错
             if profile.needs_login and not session.is_logged_in(profile.auth_cookies):
-                self.log.emit(f"[{acc.name}] 未登录,请在弹出的浏览器扫码")
-                # 等用户登录:轮询 60s
-                for _ in range(60):
-                    time.sleep(1.0)
-                    if session.is_logged_in(profile.auth_cookies):
-                        self.log.emit(f"[{acc.name}] 登录成功"); break
-                else:
-                    q.mark_failed(task.id, "60 秒未完成登录")
-                    return
+                # 二次确认:再等 5 秒(给页面加载时间),还是 false 才警告
+                time.sleep(3)
+                if not session.is_logged_in(profile.auth_cookies):
+                    self.log.emit(
+                        f"[{acc.name}] ⚠ 检测不到登录 cookie/页面仍有登录按钮 — "
+                        f"尝试继续(若实际已登录,任务会正常跑;否则会报具体错误)"
+                    )
+                    # 不 return,不阻塞,继续走
 
             # 4.5 视频任务:若 profile 配了 video_entry,先点切到视频模式
             # (豆包: 顶部"视频生成"tab;即梦/未来其它平台同理)
