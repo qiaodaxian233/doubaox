@@ -173,6 +173,7 @@ class BackendPanel(QFrame):
 
         # hint
         hint = QLabel(
+            "💡 点账号行的 🌐 按钮打开浏览器扫码登录,cookie 自动保存\n"
             "图片后端(GPT/即梦)用于生成 角色三视图 / 道具 / 分镜板大图;\n"
             "视频后端(豆包)用于把分镜板转成 10s 视频。"
         )
@@ -299,16 +300,28 @@ class BackendPanel(QFrame):
         row.setStyleSheet(f"background: {C['surface_alt']}; border-radius: 5px;")
         h = QHBoxLayout(row); h.setContentsMargins(8, 6, 8, 6); h.setSpacing(6)
 
-        av = QLabel()
+        # 头像 + 在线指示点(右下角)
+        av_box = QFrame()
+        av_box.setFixedSize(22, 22)
+        av = QLabel(av_box)
         av.setPixmap(make_avatar(acc.color, acc.name[0], 20))
         av.setFixedSize(20, 20)
-        h.addWidget(av)
+        av.move(0, 0)
+        is_online = self._is_session_online(acc.id)
+        dot = QLabel(av_box)
+        dot.setFixedSize(8, 8)
+        dot.move(14, 14)
+        dot.setStyleSheet(
+            f"background: {C['online'] if is_online else C['muted']};"
+            f"border-radius: 4px; border: 1.5px solid {C['surface_alt']};"
+        )
+        h.addWidget(av_box)
 
         name = QLabel(acc.name)
         name.setStyleSheet(f"font-size: 11px; color: {C['ink']};")
         h.addWidget(name, 1)
 
-        # 配额(无限或 X/N)
+        # 配额
         if acc.is_unlimited():
             q = QLabel("∞")
             q.setStyleSheet(f"""
@@ -336,11 +349,104 @@ class BackendPanel(QFrame):
             plus.clicked.connect(lambda: self._adjust(acc.id, -1))
             h.addWidget(plus)
 
+        # 🌐 打开浏览器扫码登录 — 关键功能
+        login_btn = QPushButton("🌐"); login_btn.setObjectName("IconOnly")
+        login_btn.setFixedSize(22, 22)
+        if is_online:
+            login_btn.setToolTip(
+                f"浏览器已开 — 点击聚焦窗口\n"
+                f"扫码登录后,cookie 自动保存到\n~/.doubao-studio/profiles/{acc.id}/"
+            )
+        else:
+            login_btn.setToolTip(
+                f"打开 Chromium 浏览器,跳转到 {acc.backend_id} 主页\n"
+                f"用手机/微信扫码登录后,cookie 自动保存\n"
+                f"以后生成任务时无需重新登录"
+            )
+        login_btn.setStyleSheet(
+            f"font-size: 13px;"
+            f"color: {C['online'] if is_online else C['accent']};"
+        )
+        login_btn.clicked.connect(lambda: self._launch_browser(acc.id))
+        h.addWidget(login_btn)
+
         rm = QPushButton("✕"); rm.setObjectName("IconOnly")
         rm.setFixedSize(20, 20); rm.setToolTip("删除账号")
         rm.clicked.connect(lambda: self._delete(acc.id))
         h.addWidget(rm)
         return row
+
+    def _is_session_online(self, acc_id: str) -> bool:
+        """该账号的 Chromium 会话是否已启动。"""
+        try:
+            from .playwright_session import get_pool, HAS_PLAYWRIGHT
+            if not HAS_PLAYWRIGHT: return False
+            sess = get_pool().get(acc_id)
+            return bool(sess and sess.status.online)
+        except Exception:
+            return False
+
+    def _launch_browser(self, acc_id: str):
+        """启动账号 Chromium → 跳到 backend home_url → 用户扫码登录。
+
+        cookie 通过 launch_persistent_context 自动保存,
+        以后任务派发时无需重新登录。
+        """
+        acc = next((a for a in self.accounts if a.id == acc_id), None)
+        if not acc:
+            QMessageBox.warning(self, "错误", "找不到该账号"); return
+
+        # 1. Playwright 装了吗
+        try:
+            from .playwright_session import HAS_PLAYWRIGHT, get_pool
+        except ImportError:
+            HAS_PLAYWRIGHT = False
+        if not HAS_PLAYWRIGHT:
+            QMessageBox.warning(
+                self, "Playwright 未安装",
+                "需要先装 Playwright 才能启动浏览器:\n\n"
+                "  pip install playwright\n"
+                "  playwright install chromium\n\n"
+                "或者你可以手动打开浏览器登录,"
+                "之后用「📋 复制 prompt」按钮配合手动操作。"
+            ); return
+
+        # 2. backend 配置
+        backend = ST.get_backend(acc.backend_id)
+        if not backend:
+            QMessageBox.warning(self, "错误",
+                f"找不到 backend 配置: {acc.backend_id}\n"
+                f"右栏底部应该有「+ 添加账号」按钮重建"
+            ); return
+
+        # 3. 启动 / 复用 session(同步阻塞 → WaitCursor)
+        pool = get_pool()
+        sess = pool.get_or_create(acc)
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            if not sess.status.online:
+                self.log.emit(f"[{acc.name}] 启动 Chromium...")
+                sess.start(headless=False)
+                self.log.emit(f"[{acc.name}] 浏览器已启动,跳转到 {backend.url}")
+            sess.goto(backend.url)
+            self.log.emit(
+                f"[{acc.name}] 已打开 {backend.name} — 请在弹出的浏览器扫码登录\n"
+                f"  cookie 会自动保存到 ~/.doubao-studio/profiles/{acc_id}/\n"
+                f"  以后生成任务时无需重新登录"
+            )
+            self._render()   # 刷新行,在线点变绿
+        except Exception as e:
+            err_msg = str(e)
+            tip = ""
+            if "chrome" in err_msg.lower() or "chromium" in err_msg.lower():
+                tip = ("\n\n可能原因:\n"
+                       "1. 未装 Chromium → 跑 `playwright install chromium`\n"
+                       "2. 本机 Chrome 版本过旧 → 升级或装 Chromium")
+            QMessageBox.critical(self, "启动失败", f"{err_msg}{tip}")
+            self.log.emit(f"[{acc.name}] 启动失败: {err_msg}")
+        finally:
+            QGuiApplication.restoreOverrideCursor()
 
     def _add_account(self, backend_id: str):
         b = ST.get_backend(backend_id)
