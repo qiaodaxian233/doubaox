@@ -224,11 +224,12 @@ class AccountSession:
         return False
 
     def upload_txt(self, text: str, file_name: str = "script.txt",
-                   upload_selector: str = "") -> bool:
-        """把文本写成 .txt 文件 + 注入到 file input(用户反馈:长 prompt 走 TXT 附件)。
+                   upload_selector: str = "", use_bom: bool = True) -> bool:
+        """把文本写成 .txt 文件 + 注入到 file input。
 
-        - utf-8 + BOM(防 GPT 中文乱码)
-        - 临时文件存到 downloads_dir 下 _uploads/
+        - use_bom=True (默认):头部加 \\uFEFF (UTF-8 BOM),给 GPT 镜像/ChatGPT 用,防中文乱码
+        - use_bom=False:豆包/即梦 等国产平台,原生吃 UTF-8 无 BOM
+        - 临时文件存到 downloads_dir/_uploads/
         - 调 set_input_files 注入
         """
         if not self._page: return False
@@ -236,8 +237,8 @@ class AccountSession:
         upload_root.mkdir(parents=True, exist_ok=True)
         target = upload_root / file_name
         try:
-            # \ufeff = UTF-8 BOM,确保 GPT 正确识别中文
-            target.write_text("\ufeff" + text, encoding="utf-8")
+            prefix = "\ufeff" if use_bom else ""
+            target.write_text(prefix + text, encoding="utf-8")
         except Exception:
             return False
         if not upload_selector:

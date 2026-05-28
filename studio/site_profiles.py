@@ -43,8 +43,12 @@ class SiteProfile:
     # 字符阈值:prompt 超过这个长度 → 自动改用 TXT 附件 + 短指令
     # 设为 0 = 永不走 TXT;默认 4000 对中文剧本够用
     txt_upload_threshold: int = 4000
-    # TXT 附件触发后的占位指令(写到输入框,告诉 GPT 看 TXT 附件)
+    # TXT 附件触发后的占位指令(写到输入框,告诉对方看 TXT 附件)
     txt_upload_instruction: str = "请严格按附件 TXT 里的内容执行任务。"
+    # TXT 是否加 UTF-8 BOM(\ufeff)
+    # True:GPT 镜像 / ChatGPT — 英语圈后端对裸 UTF-8 中文识别不稳,加 BOM 保险
+    # False:豆包 / 即梦 — 国产平台,原生吃 UTF-8 无 BOM,加了反而多个隐形字符
+    txt_use_bom: bool = True
     # 生成完成的文本标志(中文 GPT 镜像通常出 "图片已创建" 三字)
     # 用 || 分隔多个候选(任一出现即视为完成)
     completion_text_marker: str = ""
@@ -110,6 +114,7 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
         result_selector='[class*="result"], [class*="output"]',
         result_image_in='img[src*="jimeng"], img[src*="ssl.bytedance"], img[src*="byteimg"]',
         result_video_in='video[src*="jimeng"], video[src*="byteimg"]',
+        txt_use_bom=False,    # 字节跳动原生吃 UTF-8 无 BOM
         supports_image=True,
         supports_video=True,
     ),
@@ -129,6 +134,7 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
         result_video_in='video',
         result_image_in='img[src*="lf3"], img[src*="byteimg"]',
         quota_selector='[data-testid*="quota"], [class*="quota"]',
+        txt_use_bom=False,    # 字节跳动原生吃 UTF-8 无 BOM
         supports_image=True,
         supports_video=True,
     ),

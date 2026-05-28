@@ -226,12 +226,15 @@ class Worker(QObject):
                 )
                 # 文件名带 task id 便于追踪
                 fname = f"prompt_{task.id[:12]}.txt"
+                use_bom = getattr(profile, "txt_use_bom", True)
                 upload_ok = session.upload_txt(
                     task.prompt, file_name=fname,
                     upload_selector=profile.upload_btn,
+                    use_bom=use_bom,
                 )
                 if upload_ok:
-                    self.log.emit(f"[{task.title}] TXT 附件上传完成")
+                    bom_tag = "+BOM" if use_bom else "-BOM"
+                    self.log.emit(f"[{task.title}] TXT 附件上传完成 ({bom_tag})")
                     # 等附件预览出现(确认 GPT 收到了)
                     try:
                         page = session.page()
