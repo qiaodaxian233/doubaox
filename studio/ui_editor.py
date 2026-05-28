@@ -1182,6 +1182,76 @@ class EpisodesView(QFrame):
         c4.addWidget(mv); row1.addLayout(c4)
         body.addLayout(row1)
 
+        # 引用关联(场景 + 角色 + 道具)
+        body.addWidget(Hline(soft=True))
+        ref_sec = QLabel("【引用关联】(用于'故事板大图'自动编号 参考图1/参考图2...)")
+        ref_sec.setStyleSheet(f"color: {C['muted']}; font-size: 11px; margin-top: 4px;")
+        body.addWidget(ref_sec)
+
+        # 场景
+        all_scenes = ST.load_scenes(self.pid)
+        body.addWidget(field_label("场景"))
+        scn_cb = QComboBox()
+        scn_cb.addItem("(无)", "")
+        for s in all_scenes:
+            scn_cb.addItem(f"{s.name} {s.placeholder}", s.id)
+        # 选中当前
+        for i in range(scn_cb.count()):
+            if scn_cb.itemData(i) == shot.scene_id:
+                scn_cb.setCurrentIndex(i); break
+        scn_cb.currentIndexChanged.connect(
+            lambda _: (setattr(shot, "scene_id", scn_cb.currentData() or ""), commit(), self._render_shots())
+        )
+        body.addWidget(scn_cb)
+
+        # 角色多选(用复选框列表)
+        all_chars = ST.load_characters(self.pid)
+        if all_chars:
+            body.addWidget(field_label("角色(可多选,顺序决定 参考图N 编号)"))
+            from PySide6.QtWidgets import QCheckBox
+            chars_box = QFrame(); chars_box.setStyleSheet(
+                f"background: {C['surface_alt']}; border-radius: 6px; padding: 4px;"
+            )
+            chars_layout = QVBoxLayout(chars_box); chars_layout.setContentsMargins(8, 6, 8, 6)
+            chars_layout.setSpacing(4)
+            for c in all_chars:
+                cb = QCheckBox(f"{c.name}  {c.placeholder}")
+                cb.setStyleSheet(f"color: {C['ink']}; font-size: 12px;")
+                cb.setChecked(c.id in shot.character_ids)
+                def _toggle(checked, cid=c.id, ck=cb):
+                    if checked and cid not in shot.character_ids:
+                        shot.character_ids.append(cid)
+                    elif not checked and cid in shot.character_ids:
+                        shot.character_ids.remove(cid)
+                    commit(); self._render_shots()
+                cb.toggled.connect(_toggle)
+                chars_layout.addWidget(cb)
+            body.addWidget(chars_box)
+
+        # 道具多选
+        all_props = ST.load_props(self.pid)
+        if all_props:
+            body.addWidget(field_label("道具(可多选)"))
+            from PySide6.QtWidgets import QCheckBox
+            props_box = QFrame(); props_box.setStyleSheet(
+                f"background: {C['surface_alt']}; border-radius: 6px; padding: 4px;"
+            )
+            props_layout = QVBoxLayout(props_box); props_layout.setContentsMargins(8, 6, 8, 6)
+            props_layout.setSpacing(4)
+            for p in all_props:
+                cb = QCheckBox(f"{p.name}  {p.placeholder}")
+                cb.setStyleSheet(f"color: {C['ink']}; font-size: 12px;")
+                cb.setChecked(p.id in shot.prop_ids)
+                def _toggle_p(checked, pid=p.id):
+                    if checked and pid not in shot.prop_ids:
+                        shot.prop_ids.append(pid)
+                    elif not checked and pid in shot.prop_ids:
+                        shot.prop_ids.remove(pid)
+                    commit(); self._render_shots()
+                cb.toggled.connect(_toggle_p)
+                props_layout.addWidget(cb)
+            body.addWidget(props_box)
+
         # 6 维度
         body.addWidget(Hline(soft=True))
         sec = QLabel("【6 维度 · 蒙哥模板】")
@@ -1240,6 +1310,19 @@ class EpisodesView(QFrame):
         gen_vid.clicked.connect(lambda: self._gen_shot_video(shot))
         vid_row.addWidget(gen_vid)
         body.addLayout(vid_row)
+
+        # 故事板大图(本镜作锚点,扩展到 8 格分镜板)
+        board_row = QHBoxLayout(); board_row.setSpacing(6)
+        copy_board = QPushButton("📋 复制故事板大图 Prompt")
+        copy_board.setToolTip("用本镜作锚点,拼「故事板大图」prompt(蒙哥实战版)")
+        copy_board.clicked.connect(lambda: self._copy_storyboard_master(shot))
+        board_row.addWidget(copy_board)
+        gen_board = QPushButton("🎨 拼故事板大图")
+        gen_board.setObjectName("Accent")
+        gen_board.setToolTip("拼「故事板大图」prompt + 自动附上角色/道具参考图 → 入 GPT 队列")
+        gen_board.clicked.connect(lambda: self._gen_storyboard_master(shot))
+        board_row.addWidget(gen_board)
+        body.addLayout(board_row)
 
         # 导入生成结果
         import_row = QHBoxLayout(); import_row.setSpacing(6)
@@ -1352,6 +1435,129 @@ class EpisodesView(QFrame):
             reference_images=refs,
         )
         self.log.emit(f"{msg} — 分镜 #{shot.number} 视频 (参考图 {len(refs)})")
+
+    # ==================== 故事板大图(蒙哥实战格式 · 用本镜作锚点) ====================
+    def _build_storyboard_master_prompt(self, shot: Shot) -> tuple:
+        """构建"故事板大图 prompt"。
+        
+        逻辑:
+        - 从本镜引用的角色/道具按顺序分配 参考图1 / 参考图2 ...
+          (场景图编号靠后,因为通常不作为人物 ref 上传)
+        - 在 6 维度文字里把"角色名"替换成"角色名+参考图N"(贴着写)
+        - 拼成完整 prompt + 收集要上传的图片文件
+        
+        返回:(full_prompt, [reference_image_paths])
+        """
+        from .prompts import get_template, render_template
+
+        chars = ST.load_characters(self.pid)
+        props = ST.load_props(self.pid)
+        scenes = ST.load_scenes(self.pid)
+
+        # 收集本镜引用的对象(角色优先,然后道具)
+        ref_pairs = []   # [(name, image_path)] 按"参考图1, 参考图2..."顺序
+
+        for cid in shot.character_ids:
+            c = next((x for x in chars if x.id == cid), None)
+            if not c: continue
+            img = ST.asset_full_path(self.pid, c.reference_image) if c.reference_image else None
+            ref_pairs.append((c.name, img if img and img.exists() else None))
+
+        for pid in shot.prop_ids:
+            p = next((x for x in props if x.id == pid), None)
+            if not p: continue
+            img = ST.asset_full_path(self.pid, p.reference_image) if p.reference_image else None
+            ref_pairs.append((p.name, img if img and img.exists() else None))
+
+        # 场景图也加进去(用户的"参考图1"通常指风格基准,我们留给场景或第一个角色)
+        scene = next((s for s in scenes if s.id == shot.scene_id), None)
+        scene_img = None
+        if scene and scene.reference_image:
+            scene_img = ST.asset_full_path(self.pid, scene.reference_image)
+            if not scene_img.exists(): scene_img = None
+
+        # 编号开始:如果有场景图,参考图1 = 场景;否则 参考图1 = 第一个角色
+        upload_refs = []
+        name_to_label = {}     # 角色/道具 名 → "参考图N"
+
+        # 先放场景(如果有图)
+        if scene_img:
+            upload_refs.append(str(scene_img))
+            base_offset = 2  # 角色从 参考图2 开始
+        else:
+            base_offset = 1
+
+        for i, (name, img_path) in enumerate(ref_pairs):
+            label = f"参考图{base_offset + i}"
+            name_to_label[name] = label
+            if img_path:
+                upload_refs.append(str(img_path))
+
+        # 把角色/道具名替换成"名+参考图N"(蒙哥实战格式)
+        def _decorate(text: str) -> str:
+            if not text: return text
+            for name, label in name_to_label.items():
+                if name and name in text:
+                    text = text.replace(name, f"{name}{label}")
+            return text
+
+        # 拼 6 维度,装饰名字
+        main_subject = _decorate(shot.action) or shot.action
+        shot_lang = f"{shot.shot_size or '中景'}{shot.camera_movement or '固定'}"
+        if shot.visual_style_note: shot_lang += f",{shot.visual_style_note}"
+        if shot.camera_params: shot_lang += f",{shot.camera_params}"
+        shot_lang = _decorate(shot_lang)
+        lighting = _decorate(shot.lighting) or shot.lighting
+        quality_notes = "8K 超高清,细节锐利,光影还原真实,无水印"
+
+        # 风格(优先 scene,fallback 通用)
+        style = (scene.visual_style if scene else "") or "超写实仿真人风格"
+
+        tpl = get_template("tpl-storyboard-master")
+        full = render_template(
+            tpl,
+            style=style,
+            main_subject=main_subject or "(无主体描述)",
+            shot_language=shot_lang or "中景固定",
+            lighting=lighting or "自然光,层次清晰",
+            quality_notes=quality_notes,
+        )
+
+        # 在末尾加角色/道具引用清单(让 GPT 知道哪张图是谁)
+        if name_to_label:
+            ref_legend = "\n\n**参考图说明:**\n"
+            if scene_img:
+                ref_legend += f"- 参考图1: 场景「{scene.name}」(风格基准)\n"
+            for name, label in name_to_label.items():
+                ref_legend += f"- {label}: {name}\n"
+            full += ref_legend
+
+        # 防御词:故事板里的标注不要混进画面(虽然这是给生图模型,加了不亏)
+        full += (
+            "\n\n**画面纯净度要求:**\n"
+            "- 主分镜区(8 格)采用写实电影感\n"
+            "- 俯视机位区采用极简 schematic 线稿风格,机位用文字编号,不要红色圆点、不要摄像机图标\n"
+            "- 不要在任何分镜格内出现机位标注、箭头、编号红圈"
+        )
+
+        return full, upload_refs
+
+    def _copy_storyboard_master(self, shot: Shot):
+        text, _ = self._build_storyboard_master_prompt(shot)
+        QApplication.clipboard().setText(text)
+        self.log.emit(f"已复制故事板大图 prompt ({len(text)} 字) — 锚点: 分镜 #{shot.number}")
+
+    def _gen_storyboard_master(self, shot: Shot):
+        text, refs = self._build_storyboard_master_prompt(shot)
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="image", backend_id="gpt-mirror",
+            title=f"故事板大图 (锚点 #{shot.number})",
+            prompt=text,
+            target_kind="shot", target_id=shot.id,
+            reference_images=refs,
+        )
+        self.log.emit(f"{msg} — 故事板大图 锚点#{shot.number} (附 {len(refs)} 张参考图)")
 
     def _import_shot_image(self, shot: Shot):
         path, _ = QFileDialog.getOpenFileName(
