@@ -183,6 +183,43 @@ class BackendPanel(QFrame):
 
         self._render()
 
+        # 监听 Worker 的浏览器控制结果(异步)
+        try:
+            from .playwright_worker import get_worker
+            w = get_worker()
+            w.browser_opened.connect(self._on_browser_opened)
+            w.browser_failed.connect(self._on_browser_failed)
+            w.browser_stopped.connect(self._on_browser_stopped)
+        except Exception:
+            pass
+
+    def _on_browser_opened(self, acc_id: str):
+        """worker 报告浏览器已开 → 刷新行(🟢 变绿)。"""
+        self._render()
+
+    def _on_browser_failed(self, acc_id: str, err: str):
+        """worker 报告打开失败 → 提示 + 刷新行。"""
+        self._render()
+        # 解析错误给修复建议
+        tip = ""
+        low = err.lower()
+        if "has been closed" in low or "target" in low:
+            tip = "\n\n浏览器被关掉了。再点一次 🌐 可以重新启动。"
+        elif "chromium" in low or "executable" in low:
+            tip = ("\n\n可能原因:\n"
+                   "1. 未装 Chromium → 跑 `playwright install chromium`\n"
+                   "2. 本机 Chrome 版本过旧 → 升级或装 Chromium")
+        elif "9222" in err or "connect" in low or "cdp" in low:
+            tip = ("\n\nCDP 挂载失败,检查:\n"
+                   "1. Chrome 是否用 --remote-debugging-port=9222 启动了\n"
+                   "2. 浏览器里访问 http://localhost:9222 是否有响应")
+        acc = next((a for a in self.accounts if a.id == acc_id), None)
+        name = acc.name if acc else acc_id
+        QMessageBox.critical(self, "启动失败", f"[{name}] {err}{tip}")
+
+    def _on_browser_stopped(self, acc_id: str):
+        self._render()
+
     def _init_accounts(self) -> List[Account]:
         accts = ST.load_accounts()
         if accts:
@@ -408,12 +445,9 @@ class BackendPanel(QFrame):
             return False
 
     def _launch_browser(self, acc_id: str):
-        """启动账号 Chromium → 跳到 backend home_url → 用户扫码登录。
+        """请求 worker 启动账号浏览器(UI 线程不直接碰 Playwright,避免 greenlet 跨线程错误)。
 
-        cookie 通过 launch_persistent_context 自动保存,
-        以后任务派发时无需重新登录。
-
-        若 acc.attach_cdp_url 非空,改走 CDP 挂载到已开 Chrome(复用用户登录)。
+        所有 Playwright 操作必须在 Worker 线程内进行 — UI 只发命令、监听信号。
         """
         acc = next((a for a in self.accounts if a.id == acc_id), None)
         if not acc:
@@ -421,7 +455,7 @@ class BackendPanel(QFrame):
 
         # 1. Playwright 装了吗
         try:
-            from .playwright_session import HAS_PLAYWRIGHT, get_pool
+            from .playwright_session import HAS_PLAYWRIGHT
         except ImportError:
             HAS_PLAYWRIGHT = False
         if not HAS_PLAYWRIGHT:
@@ -442,48 +476,14 @@ class BackendPanel(QFrame):
                 f"右栏底部应该有「+ 添加账号」按钮重建"
             ); return
 
-        # 3. 启动 / 复用 session(同步阻塞 → WaitCursor)
-        pool = get_pool()
-        sess = pool.get_or_create(acc)
-        from PySide6.QtGui import QGuiApplication
-        QGuiApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
-        try:
-            if not sess.status.online:
-                if acc.attach_cdp_url:
-                    self.log.emit(f"[{acc.name}] 挂载到 {acc.attach_cdp_url}...")
-                    sess.attach_cdp(acc.attach_cdp_url)
-                    self.log.emit(f"[{acc.name}] 已挂载本机 Chrome")
-                else:
-                    self.log.emit(f"[{acc.name}] 启动 Chromium...")
-                    sess.start(headless=False)
-                    self.log.emit(f"[{acc.name}] 浏览器已启动,跳转到 {backend.url}")
-            sess.goto(backend.url)
-            self.log.emit(
-                f"[{acc.name}] 已打开 {backend.name} — 请在弹出的浏览器扫码登录\n"
-                f"  cookie 会自动保存到 ~/.doubao-studio/profiles/{acc_id}/\n"
-                f"  以后生成任务时无需重新登录"
-            )
-            self._render()
-        except Exception as e:
-            err_msg = str(e)
-            tip = ""
-            low = err_msg.lower()
-            if "has been closed" in low or "target" in low:
-                tip = ("\n\n看起来浏览器在刚才被关掉了。\n"
-                       "再点一次 🌐 应该会重新启动。")
-            elif "chrome" in low or "chromium" in low:
-                tip = ("\n\n可能原因:\n"
-                       "1. 未装 Chromium → 跑 `playwright install chromium`\n"
-                       "2. 本机 Chrome 版本过旧 → 升级或装 Chromium")
-            elif "cdp" in low or "9222" in err_msg or "connect" in low:
-                tip = ("\n\nCDP 挂载失败。检查:\n"
-                       "1. Chrome 是否用 --remote-debugging-port=9222 启动了\n"
-                       "2. 端口号是否对(默认 9222)\n"
-                       "3. 浏览器里访问 http://localhost:9222 看是否有响应")
-            QMessageBox.critical(self, "启动失败", f"{err_msg}{tip}")
-            self.log.emit(f"[{acc.name}] 启动失败: {err_msg}")
-        finally:
-            QGuiApplication.restoreOverrideCursor()
+        # 3. 发命令给 Worker(异步)— Worker 自己起线程处理
+        from .playwright_worker import get_worker
+        worker = get_worker()
+        worker.request_open_browser(acc_id)
+        mode = "CDP 挂载" if acc.attach_cdp_url else "Chromium 自启"
+        self.log.emit(
+            f"[{acc.name}] 请求打开浏览器 ({mode}) — 后台处理中,稍后看日志结果..."
+        )
 
     def _toggle_attach_mode(self, acc_id: str):
         """切换账号的挂载模式(Playwright vs CDP)。"""
@@ -499,11 +499,10 @@ class BackendPanel(QFrame):
                 f"(隔离 cookie,首次需在工具的浏览器里重新扫码登录)"
             )
             if r != _M.Yes: return
-            # 先停掉现有 session
+            # 通过 worker 停掉现有 session(线程安全)
             try:
-                from .playwright_session import get_pool
-                sess = get_pool().get(acc.id)
-                if sess: sess.stop()
+                from .playwright_worker import get_worker
+                get_worker().request_stop_browser(acc.id)
             except Exception: pass
             acc.attach_cdp_url = ""
             ST.save_accounts(self.accounts)
@@ -523,11 +522,10 @@ class BackendPanel(QFrame):
                 text="http://localhost:9222"
             )
             if not ok or not text.strip(): return
-            # 先停掉现有
+            # 通过 worker 停掉现有(线程安全)
             try:
-                from .playwright_session import get_pool
-                sess = get_pool().get(acc.id)
-                if sess: sess.stop()
+                from .playwright_worker import get_worker
+                get_worker().request_stop_browser(acc.id)
             except Exception: pass
             acc.attach_cdp_url = text.strip()
             ST.save_accounts(self.accounts)

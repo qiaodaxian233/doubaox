@@ -17,7 +17,7 @@ Worker. 在后台线程里循环:
 from __future__ import annotations
 from typing import Optional, List, Callable
 from pathlib import Path
-import threading, time, shutil
+import threading, time, shutil, queue
 
 from PySide6.QtCore import QObject, Signal
 
@@ -34,16 +34,27 @@ from .playwright_session import get_pool, HAS_PLAYWRIGHT
 
 
 class Worker(QObject):
-    """单线程 worker。多账号并发?暂时不,M2 先稳。"""
+    """单线程 worker — 所有 Playwright 操作必须在这个线程内做(避免 greenlet 跨线程错误)。
+    
+    UI 线程绝不直接调 sess.start() / sess.goto():通过 request_open_browser /
+    request_stop_browser / request_navigate 把命令丢进控制队列,在 _loop 里处理。
+    """
     log = Signal(str)
-    task_done = Signal(str)         # task_id (Qt 信号跨线程自动 queue 到主线程,UI 安全)
-    task_failed = Signal(str, str)  # task_id, error
+    task_done = Signal(str)
+    task_failed = Signal(str, str)
+    # 浏览器控制相关 — UI 通过这些信号知道结果
+    browser_opened = Signal(str)         # acc_id
+    browser_failed = Signal(str, str)    # acc_id, error
+    browser_stopped = Signal(str)        # acc_id
 
     def __init__(self):
         super().__init__()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.profiles = load_profiles(ST.APP_DIR / "site_profiles.json")
+        # 控制命令队列(线程安全)— UI 线程往里写,worker 线程消费
+        self._control_queue: queue.Queue = queue.Queue()
+        self._pending_open_acc_ids: set = set()  # 去重:同一账号正在处理就不重复入队
 
     def start(self):
         if self._running: return
@@ -59,13 +70,99 @@ class Worker(QObject):
     def is_available(self) -> bool:
         return HAS_PLAYWRIGHT
 
+    # ============ 浏览器控制命令(UI 线程调,worker 线程执行)============
+
+    def request_open_browser(self, acc_id: str):
+        """UI 线程要求 worker 启动该账号浏览器。线程安全。"""
+        if not HAS_PLAYWRIGHT:
+            self.browser_failed.emit(acc_id, "Playwright 未安装")
+            return
+        if acc_id in self._pending_open_acc_ids:
+            self.log.emit(f"[{acc_id}] 已在处理队列,稍候")
+            return
+        self._pending_open_acc_ids.add(acc_id)
+        self._control_queue.put(("open_browser", acc_id))
+        # 确保 worker 在跑
+        if not self._running:
+            self.start()
+
+    def request_stop_browser(self, acc_id: str):
+        """UI 线程要求 worker 停止该账号浏览器。线程安全。"""
+        self._control_queue.put(("stop_browser", acc_id))
+        if not self._running and HAS_PLAYWRIGHT:
+            self.start()
+
+    def _poll_control_queue(self):
+        """处理所有积压的控制命令。在 _loop / 长等待内周期调用。"""
+        try:
+            while True:
+                cmd, arg = self._control_queue.get_nowait()
+                if cmd == "open_browser":
+                    self._handle_open_browser(arg)
+                elif cmd == "stop_browser":
+                    self._handle_stop_browser(arg)
+        except queue.Empty:
+            pass
+        except Exception as e:
+            self.log.emit(f"控制命令异常: {e}")
+
+    def _handle_open_browser(self, acc_id: str):
+        """在 worker 线程里启动账号浏览器 + 跳到 backend 主页。"""
+        try:
+            accounts = ST.load_accounts()
+            acc = next((a for a in accounts if a.id == acc_id), None)
+            if not acc:
+                self.browser_failed.emit(acc_id, "找不到账号")
+                return
+            from . import storage as _ST
+            backend = _ST.get_backend(acc.backend_id)
+            if not backend:
+                self.browser_failed.emit(acc_id, f"找不到 backend: {acc.backend_id}")
+                return
+            from .playwright_session import get_pool
+            pool = get_pool()
+            sess = pool.get_or_create(acc)
+            if not sess.status.online:
+                if acc.attach_cdp_url:
+                    self.log.emit(f"[{acc.name}] 挂载 CDP {acc.attach_cdp_url}...")
+                    sess.attach_cdp(acc.attach_cdp_url)
+                else:
+                    self.log.emit(f"[{acc.name}] 启动 Chromium...")
+                    sess.start(headless=False)
+                self.log.emit(f"[{acc.name}] 浏览器在线")
+            sess.goto(backend.url)
+            self.log.emit(
+                f"[{acc.name}] 已打开 {backend.name} — 请在浏览器里扫码登录\n"
+                f"  cookie 自动保存到 ~/.doubao-studio/profiles/{acc_id}/"
+            )
+            self.browser_opened.emit(acc_id)
+        except Exception as e:
+            err = str(e)
+            self.log.emit(f"[{acc_id}] 启动失败: {err}")
+            self.browser_failed.emit(acc_id, err)
+        finally:
+            self._pending_open_acc_ids.discard(acc_id)
+
+    def _handle_stop_browser(self, acc_id: str):
+        try:
+            from .playwright_session import get_pool
+            sess = get_pool().get(acc_id)
+            if sess:
+                sess.stop()
+            self.browser_stopped.emit(acc_id)
+        except Exception as e:
+            self.log.emit(f"[{acc_id}] 停止失败: {e}")
+
     def _loop(self):
         q = get_queue()
         while self._running:
             try:
+                # 1. 控制命令优先(浏览器登录、停止)
+                self._poll_control_queue()
+                # 2. 任务队列
                 pending = q.pending()
                 if not pending:
-                    time.sleep(1.0); continue
+                    time.sleep(0.5); continue
                 task = pending[0]
                 self._execute(task)
             except Exception as e:
@@ -297,6 +394,8 @@ class Worker(QObject):
         while time.time() < deadline:
             if not self._running:
                 return None
+            # 长等待中也处理控制命令(让用户能同时登录其它账号)
+            self._poll_control_queue()
             for d in watch_dirs:
                 if not d.exists(): continue
                 current = {p.name for p in d.iterdir()
@@ -386,6 +485,7 @@ class Worker(QObject):
 
         while time.time() < deadline:
             if not self._running: return last_text
+            self._poll_control_queue()   # 同时处理其它账号的登录请求
             try:
                 els = page.query_selector_all(profile.result_selector)
                 if els:
