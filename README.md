@@ -1,117 +1,146 @@
-# 豆包 Studio (v2 · Playwright 重构)
+# DoubaoStudio · 短剧工厂
 
-桌面版多账号豆包管理工具,集成 [doubao-nomark](https://github.com/ihmily/doubao-nomark) 无水印图片/视频提取。
+基于"蒙哥 AI"方法论的 **AI 短剧分镜与生产流水线**桌面工具。
 
-> **v2 架构变更**:从 QWebEngineView 全面切换到 **Playwright + 真实 Chromium**。理由:
-> - QtWebEngine 容易被站点反爬识别;真 Chrome 反检测能力强很多
-> - 真 cookies = 真登录状态,不再靠猜 cookie 名
-> - `launch_persistent_context(user_data_dir)` 才是真正的"独立缓存账号池"
-> - `page.evaluate()` 比 JS 注入稳得多
->
-> 这套模式参考自同作者 [novel_ai](https://github.com/qiaodaxian233/novel_ai) 项目验证过的成功打法。
+> 把零散的"开浏览器 → 写 prompt → 等图 → 写分镜 → 等视频 → 拼成片"流程,
+> 装进一个可管理的项目结构里。每部短剧一个项目;角色/场景/道具/分镜全部
+> 持久化为本地 JSON。
 
-## 特性
+---
 
-- **真账号隔离** — 每账号一个 `~/.doubao-studio/profiles/<id>/chrome_data/`,Playwright 用 `launch_persistent_context` 挂载,完整 Chrome cookies/IDB/cache
-- **真登录检测** — 每 2s 跑一次 `context.cookies()`,命中 `sessionid` / `sid_guard` 才置为已登录,所以"已登录" = 真的登录了
-- **页面媒体自动识别** — Playwright `page.evaluate(SCAN_JS)` 每 4s 扫一次 `<img>` / `<video>`,匹配豆包 CDN,自动加入媒体列表,打"页面"标签
-- **分享链接自动解析** — webview URL 命中 `/thread/...` / `video-sharing` 时,自动 import `doubao_parser` 拿无水印版本
-- **一键发送到豆包** — 在 PyQt UI 里写好提示词 → 点「▶ 发送到豆包」→ Playwright 自动在真 Chrome 里 fill + click,跟 novel_ai 同款打法
-- **截图预览** — 中间栏每 2.5s 抓一次 JPEG 显示,知道 Chrome 里正在发生什么
-- **SITE_PROFILES** — 选择器集中在一个 dict 里,豆包 DOM 改了改这里就行
-- **持久化** — 账号、提示词存 `~/.doubao-studio/*.json`
-- **降级** — 没装 Playwright / doubao-nomark 都能跑,UI 完整,提示安装命令
+## 设计动机
 
-## 安装
+豆包/即梦的 seedance 视频模型有两个硬约束:
+- **单段视频最长 10 秒**
+- **每账号每天 5 个视频额度**
+
+也就是说,一个账号一天 50 秒成片;一部 2 分钟的短剧需要 3 个账号同时干一整天。
+**视频是稀缺资源,不能拿来试错。** 必须先用图片把每镜画面定下来,再烧视频额度。
+
+蒙哥的方法论也是这么走的:角色定型 → 场景定型 → 写分镜 → 生**分镜板大图** →
+喂给 seedance 当 Master Visual Bible 一次性生成 10 秒。
+
+本工具就是把这条流水线工程化。
+
+---
+
+## 数据模型
+
+```
+Project (一部短剧)
+├── Characters   角色库      ({{Image 1}}, {{Image 2}}...)
+├── Scenes       场景库      (固定 environment/lighting/background JSON)
+├── Props        道具库      ({{Prop 1}}...)
+└── Episodes     集
+    ├── Shots       分镜    (每镜 6 维度 + 衔接锚点 + start/duration)
+    └── Segments    10s 视频片段 = 多镜打包
+```
+
+每镜的 **6 维度**(蒙哥模板):
+1. 场景
+2. 视觉风格
+3. 摄影参数(焦段/光圈/ISO)
+4. 动作设计
+5. 光影设计
+6. 音效设计
+
+**衔接锚点** = 本镜结束姿态描述,作为下一镜起始姿态,保证跨镜动作连贯。
+
+---
+
+## 4 阶段路线图
+
+| 阶段 | 范围 | 状态 |
+|---|---|---|
+| **M1** | 数据模型 + UI 三栏 + 完整 CRUD + Prompt 模板库 + 配额面板 | ✅ 本版本 |
+| **M2** | Playwright 自动化: 一键生成图片/视频 + 队列调度 + 跨账号负载均衡 | ⬜ 下一版 |
+| **M3** | AI 辅助: 剧本→分镜表自动拆解 + 分镜板大图 prompt 自动生成 | ⬜ |
+| **M4** | ffmpeg 拼接成片 + PDF 故事板导出 + 剪映工程导出 | ⬜ |
+
+---
+
+## 运行
 
 ```bash
-# 1. GUI 基础
-pip install PySide6
-
-# 2. Playwright(必须)+ 下载 Chromium 内核
-pip install playwright
-python -m playwright install chromium
-# 系统已装 Chrome 的也可以,Playwright 会自动选,不用再下
-
-# 3. (可选)装真实解析库
-git clone https://github.com/ihmily/doubao-nomark
-cd doubao-nomark && pip install -e .
-
-# 4. 运行
+pip install -r requirements.txt
 python doubao_studio.py
 ```
 
-## 使用流程
-
-1. 左侧选一个账号(默认有3个)
-2. 中间栏点右上「🚀 启动浏览器」→ Chromium 窗口弹出
-3. **首次手动登录豆包**(在弹出的 Chrome 窗口里),登录态会持久化
-4. 登录成功后:左侧账号卡片自动从"未登录"变成"已登录"(绿圆点),底部日志栏会打印 `登录确认 · 命中 sessionid`
-5. 浏览豆包对话时,右侧媒体列表会自动出现页面上的图片/视频(打"页面"标签)
-6. 复制一条分享链接(`/thread/...` 或 `video-sharing?...`)在 Chrome 里访问,自动触发 doubao-nomark 拿无水印版本(打"无水印"橙色标签)
-7. 想发提示词:在中间底部输入框写,点「▶ 发送到豆包」,Playwright 在 Chrome 里自动填+点发送
-
-## 文件结构
-
+数据全部存在 `~/.doubao-studio/`:
 ```
 ~/.doubao-studio/
-├── accounts.json          # 账号列表
-├── prompts.json           # 提示词
-├── media/                 # 下载的媒体文件
-└── profiles/
-    └── acc-1/
-        └── chrome_data/   # 完整 Chrome user-data-dir (cookies/cache/IDB)
-    └── acc-2/...
-    └── acc-3/...
+├── accounts.json
+├── prompts.json
+├── profiles/<acc-id>/       # M2 用,每账号一个浏览器 user-data-dir
+└── projects/<proj-id>/
+    ├── meta.json
+    ├── characters.json
+    ├── scenes.json
+    ├── props.json
+    ├── episodes/<ep-id>.json
+    └── assets/              # 参考图 / 生成的视频
 ```
 
-删某个账号的 chrome_data 目录 = 该账号登出 + 清空所有缓存。
+---
 
-## SITE_PROFILES 调参
+## M1 怎么用
 
-如果豆包 DOM 改了,发送提示词或抓媒体出问题,改 `doubao_studio.py` 顶部:
+1. **新建项目**(左栏「＋ 新建项目」),选风格/比例/目标时长
+2. **建角色**(角色库 tab)
+   - 填名字、性别、年龄
+   - 填**结构化五官**(脸型/眼/鼻/嘴/眉/下颌/皮肤/头发/体态)
+   - 点头像导入参考图
+   - 「📋 复制结构化 JSON」→ 粘贴到即梦生角色三视图
+3. **建场景**(场景库 tab)
+   - 填固定环境/光照/背景
+   - 「📋 复制场景 JSON」→ 粘贴到即梦生场景图
+4. **建道具**(道具库 tab)
+5. **新建集**(分镜表 tab → ＋ 新建集)
+6. **写分镜**
+   - 时长、景别、运镜在第一行
+   - 6 维度 + 衔接锚点逐项填
+   - 「📋 复制图片 Prompt」→ 即梦生图
+   - 「📋 复制视频 Prompt」→ 豆包 seedance 生 10 秒视频
+   - 生成完用「⬇ 导入参考图/视频」绑回本镜
 
-```python
-SITE_PROFILES = {
-    "doubao.com": {
-        "input":    'textarea[data-testid="chat_input_input"], textarea',  # 输入框 selector
-        "send_btn": 'button[data-testid="chat_input_send_button"], button[type="submit"]',
-        "response": '[data-testid*="message"][data-testid*="assistant"], .markdown-body',
-        # ...
-    },
-}
+**M2 之后**:这些"复制 prompt → 切到浏览器 → 粘贴 → 等"全部自动化,
+工具自动跨账号派发,跑满 15 视频/天的总配额。
 
-# DOM 扫描的 URL 匹配:漏抓时把豆包资源域名加进 PAGE_MEDIA_SCAN_JS 的正则
+---
+
+## 关键文件
+
+```
+doubao_studio.py              入口 + MainWindow
+studio/
+├── models.py                 数据类(Project/Character/Scene/Shot/...)
+├── storage.py                JSON 持久化
+├── theme.py                  颜色 + QSS
+├── widgets.py                共用小组件(头像/分隔/缩略图)
+├── prompts.py                内置蒙哥 AI 模板库
+├── ui_dialogs.py             新建项目/新建集弹窗
+├── ui_projects.py            左栏: 项目导航器
+├── ui_editor.py              中栏: 5 视图(概览/角色/场景/道具/分镜)
+└── ui_assets.py              右栏: 配额 + 队列 + 素材库
 ```
 
-跟 novel_ai 的 SITE_PROFILES 一个套路,改 selector 不动逻辑。F12 在豆包页面看 DOM 抄选择器就行。
+---
 
-## 登录 cookie 调参
+## 关于豆包/即梦的硬约束(重要)
 
-如果实测发现登录成功但状态没变,F12 → Application → Cookies → www.doubao.com,把真实鉴权 cookie 名加到 `AUTH_PRIMARY`:
+| 项 | 限制 |
+|---|---|
+| seedance 单段视频长度 | **10 秒**(硬上限) |
+| 每账号每天视频额度 | **5 个** |
+| 即梦图片生成 | 不限(免费/付费配额另算) |
+| 长片合成 | 多个 10s 段拼接,用 `{{Image 1}}` 类引用保人物一致 |
 
-```python
-AUTH_PRIMARY = {"sessionid", "sid_guard"}  # 出现其一即判定已登录
-```
+所以"一部 30s 短剧"= 3 段 10s 视频 = 起码消耗 3 个视频额度。
 
-底部「任务历史」会打印每次的 cookie 检测结果。
+---
 
-## 关于反检测
+## 致谢
 
-`launch_persistent_context` + `--disable-blink-features=AutomationControlled` 已经能过大部分简单反爬。如果遇到豆包做了更深的指纹检测:
-- 给每个账号 profile 设不同 UA(在 PlaywrightWorker._async_main 里加 `user_agent=...`)
-- 加代理:Playwright 启动参数 `proxy={"server": "..."}`
-- 引入 [`playwright-stealth`](https://github.com/AtuboDad/playwright_stealth) 处理 navigator/canvas/WebGL 指纹
-
-## 跟 v1 (QtWebEngine 版) 的区别
-
-| 能力             | v1 QtWebEngine | v2 Playwright |
-|------------------|----------------|---------------|
-| 登录检测准确性    | 靠猜 cookie 名      | `context.cookies()` 真值 |
-| 反爬识别         | 容易被识别          | 真 Chrome,过大部分检测 |
-| 页面媒体抓取     | 注入 JS,易失效     | `page.evaluate()` 稳定 |
-| 自动发送提示词   | 无               | ✓ SITE_PROFILES 驱动 |
-| 中间栏          | 嵌入 webview       | 截图预览 + Chrome 独立窗口 |
-| 账号 user-data-dir | Qt-managed     | 完整 Chrome 标准目录 |
-
-v1 在 git 历史里还能找到,需要嵌入式 webview 那种 UX 就回退。
+方法论来自蒙哥(@蒙哥AI)的飞书知识库:角色三视图定型 / Master Visual Bible /
+单镜 6 维度 / 衔接锚点 / 国漫写实分镜模板 等。本工具是把这套方法装进可点击的
+UI 里,**方法是蒙哥的,工程化是我的**。

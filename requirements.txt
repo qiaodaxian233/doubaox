@@ -1,10 +1,14 @@
-# 必须 - GUI
+# DoubaoStudio v3 - 短剧工厂
+#
+# M1 阶段必装(UI + 持久化)
 PySide6>=6.6.0
 
-# 必须 - 真实浏览器自动化 (替代 QWebEngine)
-playwright>=1.40.0
-# 装完之后跑一次:python -m playwright install chromium
+# M2 阶段(浏览器自动化生成)— 之后启用
+# playwright>=1.40.0
+#
+# M2 还会用到无水印解析(可选,不装也能跑):
+# git+https://github.com/ihmily/doubao-nomark
 
-# 可选 - 真实无水印解析 (缺失则 fallback 到 mock)
-# git clone https://github.com/ihmily/doubao-nomark
-# cd doubao-nomark && pip install -e .
+# M4 阶段(视频拼接导出)
+# ffmpeg-python>=0.2.0
+# pypdf>=4.0.0

@@ -1,23 +1,9 @@
-# Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-*.egg
-dist/
-build/
+*.pyc
+.DS_Store
 .venv/
 venv/
-env/
-
-# IDE
-.vscode/
 .idea/
-*.swp
-*.swo
-
-# OS
-Thumbs.db
-.DS_Store
-
-# doubao-nomark (sub-repo)
-doubao-nomark/
+.vscode/
+*.egg-info/
+~/.doubao-studio/
