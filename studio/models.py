@@ -106,7 +106,7 @@ class Shot:
 
     # 时间
     start_time: float = 0.0
-    duration: float = 2.0
+    duration: float = 2.5     # 默认 2.5s → 4 镜/10s,符合 seedance 节奏(3-5 镜/10s 推荐)
 
     # 内容引用
     scene_id: str = ""
@@ -154,7 +154,15 @@ class Episode:
 
 @dataclass
 class VideoSegment:
-    """10s 视频片段 = 多镜打包。豆包硬上限 10s。"""
+    """10s 视频片段 = 多镜打包。豆包硬上限 10s。
+    
+    分镜密度建议(单段 10s):
+      3 镜 / 3.3s 每镜 — 长镜头、慢节奏
+      4 镜 / 2.5s 每镜 — 标准节奏 (推荐默认)
+      5 镜 / 2.0s 每镜 — 快节奏、动作戏
+      6 镜 / 1.7s 每镜 — 极限,模型会有压力
+      7+ 镜       — 太赶,模型会自动合并/丢镜,强烈建议拆分
+    """
     id: str = field(default_factory=lambda: _gid("seg"))
     episode_id: str = ""
     number: int = 1
@@ -162,12 +170,47 @@ class VideoSegment:
 
     storyboard_image: str = ""          # 分镜板大图(给 seedance 当 master bible)
     storyboard_prompt: str = ""         # 生成分镜板大图所用的 prompt
+    storyboard_backend: str = "gpt-mirror"  # 用哪个 backend 生成分镜板 (gpt-mirror / jimeng / manual)
     video_prompt: str = ""              # 生成视频用的 prompt (通常很短)
+    video_backend: str = "doubao"       # 用哪个账号生成视频
 
     generated_video: str = ""           # 最终视频路径
     generated_by_account: str = ""      # 哪个账号生成的
     generated_at: float = 0.0
-    duration: float = 10.0
+    duration: float = 10.0              # 硬上限 10s
+
+    def shot_count(self) -> int:
+        return len(self.shot_ids)
+
+    def density_status(self) -> str:
+        """返回 'ok' / 'tight' / 'overflow' """
+        n = self.shot_count()
+        if n == 0: return "empty"
+        if n <= 5: return "ok"
+        if n == 6: return "tight"
+        return "overflow"
+
+
+# ---- 多 Backend 抽象 ----
+# v3 区分两类生成后端:
+#   image-gen  (GPT 镜像站 / 即梦):生成角色三视图、道具图、分镜板大图
+#   video-gen  (豆包 seedance):生成 10s 视频片段
+# 每类下可有多个账号(多账号 = 跨账号轮转配额)。
+
+BACKEND_IMAGE  = "image"
+BACKEND_VIDEO  = "video"
+
+
+@dataclass
+class GenerationBackend:
+    """生成后端配置。一个 backend 可挂多个 account(多账号轮转)。"""
+    id: str
+    name: str
+    kind: str = BACKEND_IMAGE           # image / video
+    url: str = ""                       # 入口 URL
+    icon: str = "🤖"
+    notes: str = ""                     # 登录方式说明等
+    enabled: bool = True
 
 
 @dataclass
@@ -175,21 +218,31 @@ class Account:
     """账号 = 算力槽。豆包每账号每天 5 个视频额度。"""
     id: str
     name: str
+    backend_id: str = "doubao"          # 属于哪个 backend
     color: str = "#1e3a8a"
     online: bool = False
     status: str = "未启动"
-    video_quota_total: int = 5          # 每日视频额度
-    video_quota_used: int = 0
+    daily_quota_total: int = 5          # 每日额度(图片站可设大数或 0=不限)
+    daily_quota_used: int = 0
     quota_reset_date: str = ""          # YYYY-MM-DD
+    # 兼容旧版字段
+    video_quota_total: int = 5
+    video_quota_used: int = 0
 
     def remaining(self) -> int:
         self._maybe_reset()
-        return max(0, self.video_quota_total - self.video_quota_used)
+        if self.is_unlimited(): return 999
+        return max(0, self.daily_quota_total - self.daily_quota_used)
+
+    def is_unlimited(self) -> bool:
+        # 显式 daily_quota_total = 0 → 不限
+        return self.daily_quota_total == 0
 
     def _maybe_reset(self):
         today = datetime.now().strftime("%Y-%m-%d")
         if self.quota_reset_date != today:
             self.quota_reset_date = today
+            self.daily_quota_used = 0
             self.video_quota_used = 0
 
 

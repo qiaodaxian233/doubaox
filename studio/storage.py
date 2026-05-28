@@ -20,12 +20,14 @@ from dataclasses import asdict
 from typing import List, Optional
 from .models import (
     Project, Character, Scene, Prop, Episode, Account, PromptTemplate,
+    GenerationBackend, BACKEND_IMAGE, BACKEND_VIDEO,
     dict_to_dataclass,
 )
 
 APP_DIR      = Path.home() / ".doubao-studio"
 PROJECTS_DIR = APP_DIR / "projects"
 ACCOUNTS_FILE = APP_DIR / "accounts.json"
+BACKENDS_FILE = APP_DIR / "backends.json"
 PROMPTS_FILE = APP_DIR / "prompts.json"
 PROFILES_DIR = APP_DIR / "profiles"      # Playwright per-account user-data-dir
 
@@ -107,6 +109,55 @@ def load_accounts() -> List[Account]:
 
 def save_accounts(accounts: List[Account]):
     _write(ACCOUNTS_FILE, [asdict(a) for a in accounts])
+
+
+# ---- Generation Backends (全局共享) ----
+DEFAULT_BACKENDS = [
+    GenerationBackend(
+        id="gpt-mirror",
+        name="紫刀 GPT 镜像",
+        kind=BACKEND_IMAGE,
+        url="https://gpt.aimonkey.plus/",
+        icon="🖼",
+        notes="用 GPT-4o/DALL-E 生角色三视图、道具图、分镜板大图。微信扫码登录。",
+    ),
+    GenerationBackend(
+        id="jimeng",
+        name="即梦 (字节)",
+        kind=BACKEND_IMAGE,
+        url="https://jimeng.jianying.com/",
+        icon="🎨",
+        notes="备选图片后端。即梦 image2 生成参考图。",
+        enabled=False,
+    ),
+    GenerationBackend(
+        id="doubao",
+        name="豆包 seedance",
+        kind=BACKEND_VIDEO,
+        url="https://www.doubao.com/chat",
+        icon="🎬",
+        notes="seedance2.0 视频。单段硬上限 10s,每账号每天 5 个视频。",
+    ),
+]
+
+
+def load_backends() -> List[GenerationBackend]:
+    data = _read(BACKENDS_FILE, None)
+    if data is None:
+        # 首启写入默认
+        save_backends(DEFAULT_BACKENDS)
+        return list(DEFAULT_BACKENDS)
+    return [dict_to_dataclass(GenerationBackend, x) for x in data]
+
+
+def save_backends(backends: List[GenerationBackend]):
+    _write(BACKENDS_FILE, [asdict(b) for b in backends])
+
+
+def get_backend(backend_id: str) -> GenerationBackend:
+    for b in load_backends():
+        if b.id == backend_id: return b
+    return None
 
 
 # ---- PromptTemplates (全局共享) ----

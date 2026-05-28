@@ -9,9 +9,10 @@
 from __future__ import annotations
 from typing import List, Optional, Dict
 from pathlib import Path
+import webbrowser
 
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QCursor, QPixmap
+from PySide6.QtCore import Qt, Signal, QSize, QUrl
+from PySide6.QtGui import QCursor, QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QScrollArea, QWidget, QStackedWidget, QLineEdit, QPlainTextEdit,
@@ -32,6 +33,24 @@ from .ui_dialogs import NewEpisodeDialog
 
 SHOT_SIZE_OPTIONS = ["远景", "全景", "中景", "近景", "特写", "大特写", "过肩", "反打"]
 CAMERA_MOVE_OPTIONS = ["固定", "推", "拉", "摇", "移", "跟", "旋转", "俯仰", "升降", "手持"]
+
+
+def _open_url(url: str):
+    """系统浏览器打开 URL。"""
+    try: QDesktopServices.openUrl(QUrl(url))
+    except Exception:
+        try: webbrowser.open(url)
+        except Exception: pass
+
+
+def _copy_and_open(text: str, backend_id: str) -> str:
+    """复制 prompt + 打开对应 backend URL。返回 backend 名(用于日志)。"""
+    QApplication.clipboard().setText(text)
+    b = ST.get_backend(backend_id)
+    if b and b.url:
+        _open_url(b.url)
+        return b.name
+    return backend_id
 
 
 class EditorPanel(QFrame):
@@ -469,11 +488,21 @@ class CharactersView(_AssetGridView):
         form.addSpacing(8)
         add_field("备注", c.notes, "notes", multiline=True)
 
-        # 复制 JSON 按钮
-        copy_btn = QPushButton("📋 复制结构化数据(JSON)")
+        # 复制 JSON / 用 GPT 生成
+        actions_row = QHBoxLayout(); actions_row.setSpacing(6)
+        copy_btn = QPushButton("📋 复制 JSON")
         copy_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        copy_btn.setToolTip("复制结构化 JSON 到剪贴板")
         copy_btn.clicked.connect(lambda: self._copy_json(c))
-        form.addWidget(copy_btn)
+        actions_row.addWidget(copy_btn)
+
+        gen_btn = QPushButton("🤖 用 GPT 生成三视图")
+        gen_btn.setObjectName("Accent")
+        gen_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        gen_btn.setToolTip("复制三视图 prompt → 打开 GPT 镜像站(粘贴即可生成)")
+        gen_btn.clicked.connect(lambda: self._gen_triview(c))
+        actions_row.addWidget(gen_btn)
+        form.addLayout(actions_row)
 
         form.addStretch()
         scroll.setWidget(form_wrap)
@@ -489,6 +518,34 @@ class CharactersView(_AssetGridView):
         }
         QApplication.clipboard().setText(json.dumps(data, ensure_ascii=False, indent=2))
         self.log.emit(f"已复制 {c.name} 的结构化 JSON 到剪贴板")
+
+    def _gen_triview(self, c: Character):
+        """生成角色三视图卡 - 拼完整 prompt 并打开 GPT 镜像站。"""
+        from .prompts import get_template, render_template
+        import json
+        struct = json.dumps({
+            "face_shape": c.face_shape, "eye_details": c.eye_details,
+            "nose_shape": c.nose_shape, "lip_shape": c.lip_shape,
+            "eyebrow_style": c.eyebrow_style, "jawline": c.jawline,
+            "skin_details": c.skin_details, "style_lock": c.style_lock,
+            "hair": c.hair, "body": c.body,
+        }, ensure_ascii=False, indent=2)
+        tpl = get_template("tpl-char-001")
+        if tpl:
+            header = render_template(
+                tpl,
+                style=c.visual_style or "2D动画风格",
+                name=c.name,
+                gender=c.gender or "未指定",
+                age=c.age or "成年",
+            )
+        else:
+            header = f"{c.visual_style or '2D动画风格'}。生成角色 {c.name} 的三视图。"
+        full = f"{header}\n\n**结构化面部数据:**\n\n```json\n{struct}\n```"
+        if c.notes:
+            full += f"\n\n**备注:** {c.notes}"
+        backend = _copy_and_open(full, "gpt-mirror")
+        self.log.emit(f"已复制三视图 prompt ({len(full)} 字) + 打开 {backend} → 粘贴生成")
 
 
 # =========================================================================
@@ -568,9 +625,18 @@ class ScenesView(_AssetGridView):
         add("固定背景 fixed_background", s.fixed_background, "fixed_background", multiline=True,
             ph="矿道呈弯曲延伸状,尽头处有微弱洞口透光...")
 
-        copy_btn = QPushButton("📋 复制场景 JSON")
+        actions_row = QHBoxLayout(); actions_row.setSpacing(6)
+        copy_btn = QPushButton("📋 复制 JSON")
         copy_btn.clicked.connect(lambda: self._copy_json(s))
-        form.addWidget(copy_btn)
+        actions_row.addWidget(copy_btn)
+
+        gen_btn = QPushButton("🤖 用 GPT 生成场景图")
+        gen_btn.setObjectName("Accent")
+        gen_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        gen_btn.setToolTip("复制场景 prompt → 打开 GPT 镜像站")
+        gen_btn.clicked.connect(lambda: self._gen_scene(s))
+        actions_row.addWidget(gen_btn)
+        form.addLayout(actions_row)
 
         form.addStretch()
         scroll.setWidget(fw)
@@ -587,6 +653,29 @@ class ScenesView(_AssetGridView):
         }
         QApplication.clipboard().setText(json.dumps(data, ensure_ascii=False, indent=2))
         self.log.emit(f"已复制场景「{s.name}」JSON")
+
+    def _gen_scene(self, s: Scene):
+        from .prompts import get_template, render_template
+        tpl = get_template("tpl-scene-001")
+        if tpl:
+            body = render_template(
+                tpl,
+                aspect_ratio=s.aspect_ratio or "16:9",
+                asset_description=s.asset_description,
+                fixed_environment=s.fixed_environment,
+                fixed_lighting=s.fixed_lighting,
+                fixed_background=s.fixed_background,
+            )
+        else:
+            body = s.asset_description
+        full = (
+            f"{s.visual_style or '3D超写实风格'}。生成场景「{s.name}」的环境概念图,"
+            f"无人物,纯环境,比例 {s.aspect_ratio}。\n\n"
+            f"场景参数:\n```json\n{body}\n```\n\n"
+            f"画质要求:8K 超高清,电影级光影,材质细节清晰。"
+        )
+        backend = _copy_and_open(full, "gpt-mirror")
+        self.log.emit(f"已复制场景 prompt + 打开 {backend}")
 
 
 # =========================================================================
@@ -649,8 +738,25 @@ class PropsView(_AssetGridView):
         phw.editingFinished.connect(lambda: (setattr(p, "placeholder", phw.text()), self._save()))
         form.addWidget(phw)
 
+        gen_btn = QPushButton("🤖 用 GPT 生成道具图")
+        gen_btn.setObjectName("Accent")
+        gen_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        gen_btn.setToolTip("复制道具 prompt → 打开 GPT 镜像站")
+        gen_btn.clicked.connect(lambda: self._gen_prop(p))
+        form.addWidget(gen_btn)
+
         form.addStretch()
         self.detail_layout.addLayout(form)
+
+    def _gen_prop(self, p: Prop):
+        full = (
+            f"生成道具「{p.name}」的纯白背景参考图,4K 超清,无人物,无背景元素,"
+            f"产品级摄影质感。\n\n"
+            f"道具描述:{p.description or p.name}\n\n"
+            f"要求:细节锐利,材质清晰,无水印,正面 + 透视两个角度并排展示。"
+        )
+        backend = _copy_and_open(full, "gpt-mirror")
+        self.log.emit(f"已复制道具 prompt + 打开 {backend}")
 
 
 # =========================================================================
@@ -789,6 +895,49 @@ class EpisodesView(QFrame):
             empty.setStyleSheet(f"color: {C['muted']}; padding: 40px 0;")
             empty.setAlignment(Qt.AlignCenter)
             self.shot_layout.addWidget(empty); return
+
+        # 密度统计条
+        n = len(self.current_ep.shots)
+        total_dur = sum(s.duration for s in self.current_ep.shots)
+        segments_needed = int(-(-total_dur // 10))   # ceil
+        avg_per_seg = (n / segments_needed) if segments_needed else 0
+
+        stats = QFrame(); stats.setObjectName("Card")
+        sl = QHBoxLayout(stats); sl.setContentsMargins(12, 8, 12, 8); sl.setSpacing(10)
+
+        n_lbl = QLabel(f"<b>{n}</b> 镜")
+        n_lbl.setStyleSheet(f"color: {C['ink']}; font-family: 'JetBrains Mono', monospace; font-size: 11px;")
+        sl.addWidget(n_lbl)
+
+        sl.addWidget(QLabel("·"))
+        dur_lbl = QLabel(f"<b>{total_dur:.1f}</b>s")
+        dur_lbl.setStyleSheet(f"color: {C['ink']}; font-family: 'JetBrains Mono', monospace; font-size: 11px;")
+        sl.addWidget(dur_lbl)
+
+        sl.addWidget(QLabel("·"))
+        seg_lbl = QLabel(f"<b>{segments_needed}</b> 个 10s 段")
+        seg_lbl.setStyleSheet(f"color: {C['ink']}; font-family: 'JetBrains Mono', monospace; font-size: 11px;")
+        sl.addWidget(seg_lbl)
+
+        sl.addStretch()
+
+        # 密度警告(基于平均 镜/段)
+        if n == 0:
+            badge_txt, badge_color = "空集", C['muted']
+        elif avg_per_seg <= 5:
+            badge_txt, badge_color = f"🟢 {avg_per_seg:.1f} 镜/段 节奏 OK", C['online']
+        elif avg_per_seg == 6:
+            badge_txt, badge_color = f"🟡 {avg_per_seg:.1f} 镜/段 紧凑", C['warning']
+        else:
+            badge_txt, badge_color = f"🔴 {avg_per_seg:.1f} 镜/段 太赶,建议拆", C['danger']
+        badge = QLabel(badge_txt)
+        badge.setStyleSheet(f"""
+            color: {badge_color}; font-family: 'JetBrains Mono', monospace;
+            font-size: 10px; font-weight: 500;
+        """)
+        sl.addWidget(badge)
+
+        self.shot_layout.addWidget(stats)
 
         if not self.current_ep.shots:
             empty = QLabel(f"第{self.current_ep.number}集还没有分镜\n点上面「＋ 新建分镜」")
@@ -989,17 +1138,36 @@ class EpisodesView(QFrame):
 
         # 操作按钮
         body.addWidget(Hline(soft=True))
-        actions = QHBoxLayout(); actions.setSpacing(8)
-        copy_img = QPushButton("📋 复制图片 Prompt")
+        sec3 = QLabel("【生成】")
+        sec3.setStyleSheet(f"color: {C['accent']}; font-weight: 500; font-size: 12px; margin-top: 4px;")
+        body.addWidget(sec3)
+
+        # 图片 prompt 行
+        img_row = QHBoxLayout(); img_row.setSpacing(6)
+        copy_img = QPushButton("📋 复制图 Prompt")
         copy_img.clicked.connect(lambda: self._copy_image_prompt(shot))
-        actions.addWidget(copy_img)
+        img_row.addWidget(copy_img)
+        gen_img = QPushButton("🤖 用 GPT 生图")
+        gen_img.setObjectName("Accent")
+        gen_img.setToolTip("复制 + 打开 GPT 镜像站")
+        gen_img.clicked.connect(lambda: self._gen_shot_image(shot))
+        img_row.addWidget(gen_img)
+        body.addLayout(img_row)
+
+        # 视频 prompt 行
+        vid_row = QHBoxLayout(); vid_row.setSpacing(6)
         copy_vid = QPushButton("📋 复制视频 Prompt")
         copy_vid.clicked.connect(lambda: self._copy_video_prompt(shot))
-        actions.addWidget(copy_vid)
-        body.addLayout(actions)
+        vid_row.addWidget(copy_vid)
+        gen_vid = QPushButton("🎬 用豆包生视频")
+        gen_vid.setObjectName("Accent")
+        gen_vid.setToolTip("复制 + 打开豆包(此镜单独生成 ≤10s 视频片段)")
+        gen_vid.clicked.connect(lambda: self._gen_shot_video(shot))
+        vid_row.addWidget(gen_vid)
+        body.addLayout(vid_row)
 
         # 导入生成结果
-        import_row = QHBoxLayout(); import_row.setSpacing(8)
+        import_row = QHBoxLayout(); import_row.setSpacing(6)
         imp_img = QPushButton("⬇ 导入参考图")
         imp_img.clicked.connect(lambda: self._import_shot_image(shot))
         import_row.addWidget(imp_img)
@@ -1071,6 +1239,16 @@ class EpisodesView(QFrame):
         text = self._build_video_prompt(shot)
         QApplication.clipboard().setText(text)
         self.log.emit(f"已复制分镜 #{shot.number} 的视频 prompt ({len(text)} 字)")
+
+    def _gen_shot_image(self, shot: Shot):
+        text = self._build_image_prompt(shot)
+        backend = _copy_and_open(text, "gpt-mirror")
+        self.log.emit(f"已复制图 prompt + 打开 {backend} → 粘贴生成参考图")
+
+    def _gen_shot_video(self, shot: Shot):
+        text = self._build_video_prompt(shot)
+        backend = _copy_and_open(text, "doubao")
+        self.log.emit(f"已复制视频 prompt + 打开 {backend} → 粘贴 + 上传参考图生成")
 
     def _import_shot_image(self, shot: Shot):
         path, _ = QFileDialog.getOpenFileName(
