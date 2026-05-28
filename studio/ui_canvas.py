@@ -427,6 +427,127 @@ class ConnectionLine(QGraphicsPathItem):
 
 
 # =========================================================================
+# M7: 视频节点 — 显示首帧 + 时长 + 双击外部播放
+class VideoNode(_NodeBase):
+    """显示已生成视频。首帧用 ffmpeg 抽,点节点系统播放器打开。"""
+
+    NODE_W = 220
+    NODE_H = 200
+
+    def __init__(self, node_id: str, video_path: Path,
+                 title: str = "视频", duration_s: float = 0.0):
+        super().__init__()
+        self.node_id = node_id
+        self.kind = "video"
+        self.title = title
+        self.video_path = Path(video_path)
+        self.duration_s = duration_s
+        self._build()
+
+    def _build(self):
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#ffffff")))
+        bg.setPen(QPen(QColor(C["border_soft"]), 1))
+        self.addToGroup(bg)
+
+        # 视频粉色 header
+        header = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, NODE_HEADER_H, RADIUS, only_top=True))
+        header.setBrush(QBrush(QColor(KIND_COLORS["video"])))
+        header.setPen(QPen(Qt.NoPen))
+        self.addToGroup(header)
+
+        ic = QGraphicsTextItem("🎥")
+        ic.setDefaultTextColor(QColor("white"))
+        ic.setFont(QFont("Inter", 12))
+        ic.setPos(8, 4)
+        self.addToGroup(ic)
+
+        title_item = QGraphicsTextItem(self.title)
+        title_item.setDefaultTextColor(QColor("white"))
+        f = QFont("Inter Tight"); f.setPointSize(10); f.setWeight(QFont.DemiBold)
+        title_item.setFont(f)
+        title_item.setPos(34, 6)
+        title_item.setTextWidth(self.NODE_W - 80)
+        self.addToGroup(title_item)
+
+        # 时长徽章
+        if self.duration_s > 0:
+            dur_label = QGraphicsTextItem(f"{self.duration_s:.1f}s")
+            dur_label.setDefaultTextColor(QColor("white"))
+            dur_label.setFont(QFont("JetBrains Mono", 9))
+            tr = dur_label.boundingRect()
+            dur_label.setPos(self.NODE_W - tr.width() - 8, 7)
+            self.addToGroup(dur_label)
+
+        # 黑底首帧
+        thumb_y = NODE_HEADER_H + 8
+        thumb_w = self.NODE_W - 16
+        thumb_h = self.NODE_H - NODE_HEADER_H - 36
+        ph = QGraphicsPathItem(_rounded_path(8, thumb_y, thumb_w, thumb_h, 6))
+        ph.setBrush(QBrush(QColor("#1a1a1a")))
+        ph.setPen(QPen(QColor(C["border_soft"]), 1))
+        self.addToGroup(ph)
+
+        frame_path = self._ensure_frame_thumbnail()
+        if frame_path and frame_path.exists():
+            pm = QPixmap(str(frame_path))
+            if not pm.isNull():
+                pm = pm.scaled(thumb_w, thumb_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                thumb = QGraphicsPixmapItem(pm)
+                tx = 8 + max(0, (thumb_w - pm.width()) // 2)
+                ty = thumb_y + max(0, (thumb_h - pm.height()) // 2)
+                thumb.setPos(tx, ty)
+                self.addToGroup(thumb)
+
+        # 播放图标 overlay
+        play = QGraphicsTextItem("▶")
+        play.setDefaultTextColor(QColor(255, 255, 255, 220))
+        f2 = QFont("Inter Tight"); f2.setPointSize(20); f2.setWeight(QFont.Bold)
+        play.setFont(f2)
+        tr = play.boundingRect()
+        play.setPos(self.NODE_W / 2 - tr.width() / 2,
+                    thumb_y + thumb_h / 2 - tr.height() / 2)
+        self.addToGroup(play)
+
+        # 文件名
+        fn = QGraphicsTextItem(self.video_path.name)
+        fn.setDefaultTextColor(QColor(C["muted"]))
+        fn.setFont(QFont("Inter", 8))
+        fn.setTextWidth(self.NODE_W - 16)
+        fn.setPos(8, self.NODE_H - 22)
+        self.addToGroup(fn)
+
+        self._outline = QGraphicsPathItem(_rounded_path(-2, -2, self.NODE_W + 4, self.NODE_H + 4, RADIUS + 2))
+        self._outline.setBrush(QBrush(Qt.NoBrush))
+        self._outline.setPen(QPen(QColor(C["accent"]), 2))
+        self._outline.setVisible(False)
+        self.addToGroup(self._outline)
+
+    def _ensure_frame_thumbnail(self) -> Optional[Path]:
+        """用 ffmpeg 抽 0.5s 处首帧,缓存到 同目录/<stem>.frame.jpg"""
+        import subprocess, shutil
+        if not self.video_path.exists(): return None
+        thumb = self.video_path.parent / (self.video_path.stem + ".frame.jpg")
+        if thumb.exists(): return thumb
+        if not shutil.which("ffmpeg"): return None
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", "0.5", "-i", str(self.video_path),
+                 "-vframes", "1", "-q:v", "3", str(thumb)],
+                capture_output=True, timeout=10
+            )
+            return thumb if thumb.exists() else None
+        except Exception:
+            return None
+
+    def open_external(self):
+        """系统默认播放器打开。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.video_path.absolute())))
+
+
+# =========================================================================
 class GeneratorDialog(QDialog):
     """新建/编辑生成器节点的对话框。"""
 
@@ -514,6 +635,7 @@ class CanvasView(QGraphicsView):
     node_action         = Signal(str, str, str)
     blank_action        = Signal(str, QPointF)   # action, scene pos
     log                 = Signal(str)
+    manual_connection   = Signal(str, str)       # src_id, dst_id
 
     def __init__(self):
         super().__init__()
@@ -534,6 +656,23 @@ class CanvasView(QGraphicsView):
         self._zoom = 1.0
         self._nodes_by_id: Dict[str, _NodeBase] = {}
         self._connections: List[ConnectionLine] = []
+
+        # 手动连线状态
+        self._connect_mode = False
+        self._connect_src: Optional[_NodeBase] = None
+        self._temp_line: Optional[QGraphicsPathItem] = None
+
+    def set_connect_mode(self, on: bool):
+        self._connect_mode = on
+        if on:
+            self.setCursor(QCursor(Qt.CrossCursor))
+            self.setDragMode(QGraphicsView.NoDrag)
+        else:
+            self.setCursor(QCursor(Qt.ArrowCursor))
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+            self._connect_src = None
+            if self._temp_line:
+                self.scene_.removeItem(self._temp_line); self._temp_line = None
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
@@ -567,6 +706,17 @@ class CanvasView(QGraphicsView):
             self._pan_start = e.position()
             self.setCursor(QCursor(Qt.ClosedHandCursor))
             return
+        # 连线模式 + 左键点中节点 → 开始连线
+        if self._connect_mode and e.button() == Qt.LeftButton:
+            node = self._find_node(self.itemAt(e.position().toPoint()))
+            if node:
+                self._connect_src = node
+                self._temp_line = QGraphicsPathItem()
+                pen = QPen(QColor(C["accent"]), 2, Qt.DashLine)
+                self._temp_line.setPen(pen)
+                self._temp_line.setZValue(10)
+                self.scene_.addItem(self._temp_line)
+                return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -576,12 +726,37 @@ class CanvasView(QGraphicsView):
             self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - delta.x()))
             self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - delta.y()))
             return
+        # 连线进行中:跟随鼠标
+        if self._connect_mode and self._connect_src and self._temp_line:
+            src_rect = self._connect_src.sceneBoundingRect()
+            sx = src_rect.right(); sy = src_rect.center().y()
+            cur = self.mapToScene(e.position().toPoint())
+            ex, ey = cur.x(), cur.y()
+            path = QPainterPath()
+            path.moveTo(sx, sy)
+            offset = max(40, abs(ex - sx) / 2)
+            path.cubicTo(sx + offset, sy, ex - offset, ey, ex, ey)
+            self._temp_line.setPath(path)
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._panning:
             self._panning = False
-            self.setCursor(QCursor(Qt.ArrowCursor))
+            if self._connect_mode:
+                self.setCursor(QCursor(Qt.CrossCursor))
+            else:
+                self.setCursor(QCursor(Qt.ArrowCursor))
+            return
+        # 连线完成
+        if self._connect_mode and self._connect_src and e.button() == Qt.LeftButton:
+            dst = self._find_node(self.itemAt(e.position().toPoint()))
+            if dst and dst is not self._connect_src:
+                self.manual_connection.emit(self._connect_src.node_id, dst.node_id)
+            if self._temp_line:
+                self.scene_.removeItem(self._temp_line)
+                self._temp_line = None
+            self._connect_src = None
             return
         super().mouseReleaseEvent(e)
 
@@ -589,11 +764,12 @@ class CanvasView(QGraphicsView):
         item = self.itemAt(e.position().toPoint())
         node = self._find_node(item)
         if node:
-            # 文本节点 → 进入编辑文本模式;生成器节点 → 弹生成对话框;其他 → 跳编辑
             if isinstance(node, TextNode):
                 self.node_action.emit("edit_text", node.kind, node.node_id)
             elif isinstance(node, GeneratorNode):
                 self.node_action.emit("edit_generator", node.kind, node.node_id)
+            elif isinstance(node, VideoNode):
+                node.open_external()
             else:
                 self.node_double_clicked.emit(node.kind, node.node_id)
             return
@@ -618,7 +794,14 @@ class CanvasView(QGraphicsView):
             return
 
         menu = QMenu(self)
-        if isinstance(node, GeneratorNode):
+        if isinstance(node, VideoNode):
+            menu.addAction("▶ 播放 (外部播放器)", lambda: node.open_external())
+            menu.addAction("📋 复制文件路径",
+                          lambda: self.node_action.emit("copy_path", node.kind, node.node_id))
+            menu.addSeparator()
+            menu.addAction("🗑 隐藏此视频节点",
+                          lambda: self.node_action.emit("delete", node.kind, node.node_id))
+        elif isinstance(node, GeneratorNode):
             menu.addAction("✎ 编辑 / 重新生成",
                           lambda: self.node_action.emit("edit_generator", node.kind, node.node_id))
             menu.addSeparator()
@@ -759,6 +942,13 @@ class InfiniteCanvasView(QFrame):
         add_text_btn.clicked.connect(lambda: self._add_text_at(QPointF(0, 0)))
         tbl.addWidget(add_text_btn)
 
+        self.connect_mode_btn = QPushButton("🔗 连线")
+        self.connect_mode_btn.setObjectName("Subtle")
+        self.connect_mode_btn.setCheckable(True)
+        self.connect_mode_btn.setToolTip("打开后,点节点 A 拖到节点 B 创建引用连线;再次点关闭")
+        self.connect_mode_btn.toggled.connect(self._toggle_connect_mode)
+        tbl.addWidget(self.connect_mode_btn)
+
         refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.setObjectName("Subtle")
         refresh_btn.clicked.connect(self._refresh)
@@ -787,6 +977,7 @@ class InfiniteCanvasView(QFrame):
         self.canvas.node_action.connect(self._on_node_action)
         self.canvas.blank_action.connect(self._on_blank_action)
         self.canvas.log.connect(self.log)
+        self.canvas.manual_connection.connect(self._on_manual_connection)
         root.addWidget(self.canvas, 1)
 
         # 连接 Worker 完成信号
@@ -838,7 +1029,8 @@ class InfiniteCanvasView(QFrame):
             nodes_to_add.append(AssetNode(p.id, "prop", p.name, sub, img,
                                           color=KIND_COLORS["prop"]))
 
-        shots_index = {}   # shot_id → shot 对象(用于后面建连线)
+        shots_index = {}   # shot_id → shot 对象(用于建连线)
+        video_node_ids = {}   # shot_id → video_node_id
         for ep in eps:
             for shot in ep.shots:
                 shots_index[shot.id] = shot
@@ -849,6 +1041,17 @@ class InfiniteCanvasView(QFrame):
                 sub = "  ".join(filter(None, parts))
                 nodes_to_add.append(AssetNode(shot.id, "shot", title, sub, img,
                                               color=KIND_COLORS["shot"]))
+                # M7: 若有生成视频,额外加 VideoNode
+                if shot.generated_video:
+                    vp = ST.asset_full_path(self.pid, shot.generated_video)
+                    if vp.exists():
+                        vnode_id = f"video::{shot.id}"
+                        nodes_to_add.append(VideoNode(
+                            vnode_id, vp,
+                            title=f"视频 #{shot.number}",
+                            duration_s=shot.duration,
+                        ))
+                        video_node_ids[shot.id] = vnode_id
 
         # 2. 画布自定义节点
         self._canvas_items = ST.load_canvas_items(self.pid)
@@ -878,7 +1081,7 @@ class InfiniteCanvasView(QFrame):
         if unplaced:
             self._auto_layout(target_nodes=unplaced)
 
-        # 4. 建引用连线(角色/场景/道具 → 分镜)
+        # 4. 建引用连线(角色/场景/道具 → 分镜 → 视频)
         for shot_id, shot in shots_index.items():
             for cid in shot.character_ids:
                 self.canvas.add_connection(cid, shot_id)
@@ -886,6 +1089,19 @@ class InfiniteCanvasView(QFrame):
                 self.canvas.add_connection(pid, shot_id)
             if shot.scene_id:
                 self.canvas.add_connection(shot.scene_id, shot_id)
+            # shot → video 节点
+            if shot_id in video_node_ids:
+                self.canvas.add_connection(shot_id, video_node_ids[shot_id])
+
+        # 4b. 手动连线(用户拖出来的)
+        manual_f = ST.project_dir(self.pid) / "manual_links.json"
+        if manual_f.exists():
+            try:
+                links = json.loads(manual_f.read_text(encoding="utf-8"))
+                for link in links:
+                    self.canvas.add_connection(link.get("src", ""), link.get("dst", ""))
+            except Exception:
+                pass
 
         self.canvas.fit_all()
         n_canvas = sum(1 for it in self._canvas_items)
@@ -1013,6 +1229,12 @@ class InfiniteCanvasView(QFrame):
             self.owner.open_asset(kind, node_id)
 
     def _on_node_action(self, action: str, kind: str, node_id: str):
+        if action == "copy_path":
+            node = self.canvas._nodes_by_id.get(node_id)
+            if isinstance(node, VideoNode):
+                QApplication.clipboard().setText(str(node.video_path.absolute()))
+                self.log.emit(f"已复制路径: {node.video_path.name}")
+            return
         if action == "edit_text":
             node = self.canvas._nodes_by_id.get(node_id)
             if isinstance(node, TextNode):
@@ -1068,6 +1290,32 @@ class InfiniteCanvasView(QFrame):
             self._add_generator_at(scene_pos)
         elif action == "new_text":
             self._add_text_at(scene_pos)
+
+    # ---- 手动连线 ----
+    def _toggle_connect_mode(self, on: bool):
+        self.canvas.set_connect_mode(on)
+        if on:
+            self.log.emit("连线模式开 — 点节点 A 拖到节点 B 建立引用,再次点按钮关闭")
+        else:
+            self.log.emit("连线模式关")
+
+    def _on_manual_connection(self, src_id: str, dst_id: str):
+        """用户手动连接节点 → 持久化到 manual_links.json"""
+        if not self.pid: return
+        self.canvas.add_connection(src_id, dst_id)
+        f = ST.project_dir(self.pid) / "manual_links.json"
+        try:
+            existing = []
+            if f.exists():
+                existing = json.loads(f.read_text(encoding="utf-8"))
+            pair = {"src": src_id, "dst": dst_id}
+            if pair not in existing:
+                existing.append(pair)
+                f.write_text(json.dumps(existing, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+            self.log.emit(f"已建立手动连线: {src_id[:12]}... → {dst_id[:12]}...")
+        except Exception as e:
+            self.log.emit(f"手动连线保存失败: {e}")
 
     # ---- Worker 信号回调 ----
     def _on_task_done(self, task_id: str):

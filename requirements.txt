@@ -9,6 +9,9 @@ playwright>=1.40.0
 # M4 PDF 故事板导出(可选;不装则退化到 HTML 导出)
 reportlab>=4.0.0
 
+# M4.5 剪映工程导出(可选;不装时回退到手写 minimal JSON,剪映 5.x 也能用)
+pyJianYingDraft>=0.2.5
+
 # 系统依赖(非 pip):
 #   ffmpeg  — M4 视频拼接用。macOS: brew install ffmpeg / Ubuntu: apt install ffmpeg
 #   chrome  — M2 Playwright 优先用本机 Chrome(指纹更真实);没装会退化到 chromium

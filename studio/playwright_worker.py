@@ -24,7 +24,7 @@ from PySide6.QtCore import QObject, Signal
 from .models import (
     GenerationTask, Account,
     TASK_PENDING, TASK_RUNNING, TASK_AWAITING, TASK_DONE, TASK_FAILED,
-    TASK_TYPE_VIDEO,
+    TASK_TYPE_VIDEO, TASK_TYPE_AI_CHAT,
 )
 from . import storage as ST
 from .task_queue import get_queue, pick_account
@@ -139,34 +139,58 @@ class Worker(QObject):
                 except Exception as e:
                     self.log.emit(f"[{task.title}] 自动上传失败 ({e}),请手动")
 
-            # 7. 进入 awaiting 模式 — 启动 downloads 监听
+            # 7. 进入 awaiting 模式
             q.mark_awaiting(task.id)
-            self.log.emit(f"[{task.title}] 等用户在浏览器完成生成 + 下载...")
 
-            # 8. 监听下载目录
+            # 7a. AI 聊天任务:不下载文件,而是抓 DOM 文本
+            if task.task_type == TASK_TYPE_AI_CHAT:
+                self.log.emit(f"[{task.title}] 等 GPT 返回 + 自动解析...")
+                if profile.send_btn:
+                    try: session.click(profile.send_btn)
+                    except Exception: pass
+                response_text = self._wait_for_chat_response(session, profile, timeout=300)
+                if not response_text:
+                    q.mark_failed(task.id, "5 分钟内没拿到 GPT 回复")
+                    self.task_failed.emit(task.id, "no response")
+                    return
+                parsed = self._parse_json_block(response_text)
+                if not parsed:
+                    q.mark_failed(task.id, "未在 GPT 回复中找到合法 JSON")
+                    self.task_failed.emit(task.id, "no json block")
+                    self.log.emit(f"[{task.title}] GPT 回复长度 {len(response_text)} 但 JSON 解析失败")
+                    return
+                self._writeback_ai_chat(task, parsed, response_text)
+                q.mark_done(task.id, result_text=response_text)
+                self.log.emit(f"[{task.title}] AI 反解成功 — 已写回")
+                self.task_done.emit(task.id)
+                return
+
+            # 7b. 图片/视频任务:监听下载
+            self.log.emit(f"[{task.title}] 等用户在浏览器完成生成 + 下载...")
             session_downloads = session.downloads_dir
             os_downloads = self._guess_os_downloads()
             found_file = self._wait_for_download(
                 [session_downloads, os_downloads],
-                timeout=600  # 10 min
+                timeout=600
             )
 
             if not found_file:
                 q.mark_failed(task.id, "10 分钟内没监听到新文件")
+                self.task_failed.emit(task.id, "no download")
                 return
 
-            # 9. 归档到项目 assets/
+            # 8. 归档
             rel = ST.import_asset(task.project_id, found_file)
             q.mark_done(task.id, result_files=[rel])
             self.log.emit(f"[{task.title}] 已归档: {rel}")
 
-            # 10. 配额 -1
+            # 9. 配额 -1
             if task.task_type == TASK_TYPE_VIDEO and not acc.is_unlimited():
                 acc.daily_quota_used = min(acc.daily_quota_total, acc.daily_quota_used + 1)
                 acc.video_quota_used = acc.daily_quota_used
                 ST.save_accounts(accounts)
 
-            # 11. 回写到目标对象(角色参考图、分镜参考图等)
+            # 10. 回写
             self._writeback(task, rel)
             self.task_done.emit(task.id)
 
@@ -268,6 +292,125 @@ class Worker(QObject):
                     it.kind = "image" if task.task_type != "video" else "video"
                     ST.save_canvas_items(pid, items)
                     return
+
+    # ============ M3.5: AI 聊天任务的 DOM 抓取 + JSON 反解 ============
+
+    def _wait_for_chat_response(self, session, profile, timeout: int = 300) -> str:
+        """轮询 DOM 等 GPT 回复 + 稳定。
+        连续 3 秒文本无变化 + 长度 > 50 字 → 视为完成。
+        """
+        if not profile.result_selector or not session.page():
+            return ""
+        page = session.page()
+        last_text = ""
+        stable_count = 0
+        deadline = time.time() + timeout
+
+        while time.time() < deadline:
+            if not self._running: return last_text
+            try:
+                els = page.query_selector_all(profile.result_selector)
+                if els:
+                    text = els[-1].inner_text() or ""
+                else:
+                    text = page.evaluate("() => document.body.innerText")[-3000:]
+                text = text.strip()
+                if text and text == last_text and len(text) > 50:
+                    stable_count += 1
+                    if stable_count >= 3:
+                        return text
+                else:
+                    stable_count = 0
+                    last_text = text
+            except Exception:
+                pass
+            time.sleep(1.0)
+        return last_text
+
+    def _parse_json_block(self, text: str):
+        """从 markdown 文本里提 ```json ... ``` 块,失败则尝试平衡花括号扫描。"""
+        import re, json as _json
+        # 1. fenced code block
+        m = re.search(r"```(?:json)?\s*\n?(.+?)\n?```", text, re.DOTALL)
+        if m:
+            block = m.group(1).strip()
+            try: return _json.loads(block)
+            except Exception: pass
+        # 2. 平衡花括号扫描
+        depth = 0; start = -1
+        for i, ch in enumerate(text):
+            if ch == "{":
+                if depth == 0: start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    block = text[start:i + 1]
+                    try: return _json.loads(block)
+                    except Exception: continue
+        return None
+
+    def _writeback_ai_chat(self, task: GenerationTask, parsed: dict, raw_text: str):
+        """把 AI 返回的 JSON 拆分镜数据写回 episode."""
+        from .models import Shot, VideoSegment
+        pid = task.project_id
+
+        if task.target_kind != "episode": return
+        eps = ST.list_episodes(pid)
+        ep = next((e for e in eps if e.id == task.target_id), None)
+        if not ep: return
+
+        if not isinstance(parsed, dict): return
+        segments_data = parsed.get("segments") or []
+        if not isinstance(segments_data, list): return
+
+        chars_by_name = {c.name: c.id for c in ST.load_characters(pid)}
+        scenes_by_name = {s.name: s.id for s in ST.load_scenes(pid)}
+
+        # 重置(用户主动调 AI 拆分镜 = 重新拆)
+        ep.shots = []
+        ep.segments = []
+
+        cur_time = 0.0
+        seg_number = 0
+        for seg_data in segments_data:
+            seg_number += 1
+            shots_data = seg_data.get("shots", [])
+            seg_shot_ids = []
+            for sd in shots_data:
+                shot = Shot(
+                    episode_id=ep.id,
+                    number=len(ep.shots) + 1,
+                    duration=float(sd.get("duration", 2.5)),
+                    start_time=cur_time,
+                    action=sd.get("action", ""),
+                    lighting=sd.get("lighting", ""),
+                    sound=sd.get("sound", ""),
+                    dialogue=sd.get("dialogue", ""),
+                    shot_size=sd.get("shot_size", "中景"),
+                    camera_movement=sd.get("camera_movement", "固定"),
+                    transition_anchor=sd.get("transition_anchor", ""),
+                )
+                for name in sd.get("character_names", []):
+                    if name in chars_by_name:
+                        shot.character_ids.append(chars_by_name[name])
+                scene_name = sd.get("scene_name", "")
+                if scene_name and scene_name in scenes_by_name:
+                    shot.scene_id = scenes_by_name[scene_name]
+                ep.shots.append(shot)
+                seg_shot_ids.append(shot.id)
+                cur_time += shot.duration
+            ep.segments.append(VideoSegment(
+                episode_id=ep.id,
+                number=seg_number,
+                shot_ids=seg_shot_ids,
+            ))
+
+        if segments_data and segments_data[0].get("synopsis"):
+            ep.synopsis = segments_data[0]["synopsis"]
+
+        ST.save_episode(pid, ep)
+        self.log.emit(f"AI 反解写入: {len(ep.shots)} 镜 / {len(ep.segments)} 段")
 
     def _copy_to_clipboard(self, text: str):
         try:

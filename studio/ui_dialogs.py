@@ -192,8 +192,10 @@ class ExportDialog(QDialog):
         pl.addWidget(pdf_btn)
         l.addWidget(pdf_card)
 
-        # 2. 视频拼接
+        # 2. 视频拼接 — segment 优先,fallback 到 shot.generated_video
         seg_count = sum(1 for s in episode.segments if s.generated_video) if episode.segments else 0
+        if seg_count == 0:
+            seg_count = sum(1 for s in episode.shots if s.generated_video)
         vid_card = QFrame(); vid_card.setObjectName("Card")
         vl = QVBoxLayout(vid_card); vl.setContentsMargins(14, 12, 14, 12); vl.setSpacing(4)
         vt = QLabel("🎬  视频拼接"); vt.setStyleSheet("font-weight: 500;")
@@ -208,6 +210,25 @@ class ExportDialog(QDialog):
         vid_btn.clicked.connect(self._export_video)
         vl.addWidget(vid_btn)
         l.addWidget(vid_card)
+
+        # 3. 剪映工程导出
+        jy_card = QFrame(); jy_card.setObjectName("Card")
+        jl = QVBoxLayout(jy_card); jl.setContentsMargins(14, 12, 14, 12); jl.setSpacing(4)
+        jt = QLabel("🎞  剪映工程"); jt.setStyleSheet("font-weight: 500;")
+        jl.addWidget(jt)
+        jd = QLabel(
+            f"生成剪映 draft 草稿目录。每个 segment 上视频轨道,共 {seg_count} 段。\n"
+            f"⚠ 剪映 6+ 加密 draft 文件;推荐剪映 5.9 及以下打开"
+        )
+        jd.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        jd.setWordWrap(True)
+        jl.addWidget(jd)
+        jy_btn = QPushButton("导出剪映工程")
+        jy_btn.setObjectName("Primary")
+        jy_btn.setEnabled(seg_count > 0)
+        jy_btn.clicked.connect(self._export_jianying)
+        jl.addWidget(jy_btn)
+        l.addWidget(jy_card)
 
         # 关闭
         b = QDialogButtonBox()
@@ -254,5 +275,48 @@ class ExportDialog(QDialog):
                 QMessageBox.information(self, "拼接完成", f"已生成 → {path}")
             else:
                 QMessageBox.warning(self, "失败", "ffmpeg 拼接失败,可能是片段编码参数不一致")
+        except Exception as e:
+            QMessageBox.critical(self, "异常", str(e))
+
+    def _export_jianying(self):
+        from .exporter import export_jianying_draft, jianying_draft_folder, HAS_PYJYDRAFT
+        from pathlib import Path
+
+        # 默认目录:剪映草稿位置(若存在)否则桌面
+        default_parent = jianying_draft_folder()
+        if not default_parent:
+            default_parent = Path.home() / "Desktop"
+        default_name = f"doubaox-第{self.episode.number}集-{int(__import__('time').time())}"
+        suggested = str(default_parent / default_name)
+
+        path = QFileDialog.getExistingDirectory(
+            self, "选择剪映「草稿」目录的父目录(里面会建一个新草稿目录)",
+            str(default_parent),
+        )
+        if not path: return
+        output_dir = Path(path) / default_name
+
+        try:
+            ok = export_jianying_draft(
+                self.project_id, self.episode.id, output_dir,
+                width=1920, height=1080,
+            )
+            if not ok:
+                QMessageBox.warning(
+                    self, "失败",
+                    "没找到任何已生成视频可导出。\n请先生成 segment 视频或 shot 视频"
+                ); return
+            # 提示
+            backend = "pyJianYingDraft" if HAS_PYJYDRAFT else "手写 JSON"
+            jy_path = jianying_draft_folder()
+            tip = ""
+            if jy_path:
+                tip = f"\n\n剪映草稿目录:\n  {jy_path}\n复制 {output_dir.name} 整个目录进去,启动剪映即可看到"
+            else:
+                tip = "\n\n未自动检测到剪映草稿目录。\n请手动复制到:\n  macOS: ~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/\n  Windows: %APPDATA%/JianyingPro/User Data/Projects/com.lveditor.draft/"
+            QMessageBox.information(
+                self, "剪映工程导出成功",
+                f"已生成({backend}):\n{output_dir}{tip}"
+            )
         except Exception as e:
             QMessageBox.critical(self, "异常", str(e))
