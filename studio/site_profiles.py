@@ -140,25 +140,39 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
             'button[data-testid="chat_input_send_button"]'
         ),
         # 上传按钮 — dropdown menuitem(点了弹原生 file chooser)
-        # Worker 会先试 input[type=file],失败走 chooser 模式
         upload_btn=(
             '[role="menuitem"][data-slot="dropdown-menu-item"]:has-text("上传文件或图片"), '
             '[role="menuitem"]:has-text("上传文件或图片"), '
             'input[type="file"][multiple], '
             'input[type="file"]'
         ),
-        # 上传触发器 — 首层"+"按钮(打开 dropdown 后才能看到 menuitem)
-        # TODO: 用户后续探查具体 selector 后覆盖
+        # 上传触发器 — 首层"+"按钮(猜测,等用户探查后覆盖)
         upload_trigger=(
             '[aria-label*="附加"], [aria-label*="attach"], '
             '[data-testid*="attach"], [data-testid*="upload"], '
             'button[aria-haspopup="menu"]'
         ),
-        # 视频生成入口 — dropdown menuitem(用户提到第一个是"视频")
-        video_entry='[role="menuitem"][data-slot="dropdown-menu-item"]:has-text("视频")',
-        # 生成结果
-        result_selector='[data-testid*="message"][data-testid*="assistant"]',
-        result_video_in='video',
+        # 视频生成入口 — 顶部模式切换按钮"视频生成"(用户实测)
+        # 不是 dropdown menuitem,是页面顶部独立 tab
+        video_entry=(
+            'button:has-text("视频生成"), '
+            '[role="button"]:has-text("视频生成"), '
+            'div.flex:has-text("视频生成"), '
+            ':text-is("视频生成")'
+        ),
+        # 生成结果容器
+        # 视频生成完成时容器 = data-plugin-identifier="block_type:2074"(用户实测)
+        result_selector=(
+            '[data-plugin-identifier="block_type:2074"], '
+            '[data-testid*="message"][data-testid*="assistant"]'
+        ),
+        # 视频 src 含 douyinvod 或 byteimg
+        result_video_in=(
+            '[data-plugin-identifier="block_type:2074"] video, '
+            'video[src*="douyinvod"], '
+            'video[src*="byteimg"], '
+            'video'
+        ),
         result_image_in='img[src*="lf3"], img[src*="byteimg"], img[src*="bytedance"]',
         quota_selector='[data-testid*="quota"], [class*="quota"]',
         # 字节跳动原生 UTF-8,无需 BOM

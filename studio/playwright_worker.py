@@ -212,23 +212,25 @@ class Worker(QObject):
                     q.mark_failed(task.id, "60 秒未完成登录")
                     return
 
-            # 4.5 视频任务:若 profile 配了 video_entry,先点(豆包要从 dropdown 选"视频")
+            # 4.5 视频任务:若 profile 配了 video_entry,先点切到视频模式
+            # (豆包: 顶部"视频生成"tab;即梦/未来其它平台同理)
             from .models import TASK_TYPE_VIDEO as _TT_V
             if task.task_type == _TT_V and profile.video_entry:
-                try:
-                    page = session.page()
-                    if page:
-                        # 先点 upload_trigger 打开菜单(若有),再点视频 menuitem
-                        if profile.upload_trigger:
-                            for tsel in [s.strip() for s in profile.upload_trigger.split(',') if s.strip()]:
-                                try:
-                                    page.click(tsel, timeout=2000); time.sleep(0.5); break
-                                except Exception: continue
-                        page.click(profile.video_entry, timeout=3000)
-                        self.log.emit(f"[{task.title}] 已切到视频生成模式")
-                        time.sleep(0.5)
-                except Exception as e:
-                    self.log.emit(f"[{task.title}] 点视频入口失败 ({e}),继续按当前模式生成")
+                page = session.page()
+                if page:
+                    clicked = False
+                    for vsel in [s.strip() for s in profile.video_entry.split(',') if s.strip()]:
+                        try:
+                            page.click(vsel, timeout=2000)
+                            clicked = True
+                            self.log.emit(f"[{task.title}] 已切到视频生成模式 ({vsel[:40]})")
+                            time.sleep(0.8)  # 等界面切换
+                            break
+                        except Exception: continue
+                    if not clicked:
+                        self.log.emit(
+                            f"[{task.title}] 视频入口点击都失败 — 假设页面已在视频模式,继续"
+                        )
 
             # 5. 填 prompt — 长 prompt 自动走 TXT 附件(用户反馈 GPT 镜像吃不下大段)
             threshold = getattr(profile, "txt_upload_threshold", 4000)
@@ -391,11 +393,22 @@ class Worker(QObject):
                                 # 取最后一个(最新生成)
                                 src = els[-1].get_attribute("src") or els[-1].get_attribute("data-src")
                                 if src:
-                                    found_file = self._download_via_http(src, session_downloads)
+                                    # 传 page.url 做 Referer(豆包 douyinvod 签名 URL 要求)
+                                    referer = ""
+                                    try: referer = page.url or ""
+                                    except Exception: pass
+                                    found_file = self._download_via_http(
+                                        src, session_downloads, referer=referer,
+                                    )
+                                    # 若 urllib 失败(签名校验/CORS),退到浏览器内 fetch + base64 回传
+                                    if not found_file:
+                                        found_file = self._download_via_browser(
+                                            page, src, session_downloads,
+                                        )
                                     if found_file:
-                                        self.log.emit(f"[{task.title}] HTTP 抓图成功: {found_file.name}")
+                                        self.log.emit(f"[{task.title}] HTTP 抓产物成功: {found_file.name}")
                 except Exception as e:
-                    self.log.emit(f"[{task.title}] HTTP 抓图失败 ({e})")
+                    self.log.emit(f"[{task.title}] HTTP 抓产物失败 ({e})")
 
             # 层 3: 监听 Downloads 目录(用户手动下载)
             if not found_file:
@@ -494,25 +507,74 @@ class Worker(QObject):
 
         return False
 
-    def _download_via_http(self, src_url: str, save_dir: Path) -> Optional[Path]:
-        """直接 HTTP GET 图片/视频 src(blob: URL 用 Playwright 的 fetch)。"""
+    def _download_via_http(self, src_url: str, save_dir: Path,
+                           referer: str = "") -> Optional[Path]:
+        """直接 HTTP GET 图片/视频 src(blob:/data: URL 跳过)。
+
+        referer:豆包 douyinvod 等签名 URL 需要正确 Referer 才不被 403。
+        """
         import urllib.request, urllib.parse, uuid as _uuid
         if not src_url: return None
         save_dir.mkdir(parents=True, exist_ok=True)
         try:
-            # blob: URL 不能用 urllib;留给后面用 page.evaluate
             if src_url.startswith("blob:") or src_url.startswith("data:"):
                 return None
-            # 推断扩展
             parsed = urllib.parse.urlparse(src_url)
             ext = Path(parsed.path).suffix or ".png"
             if len(ext) > 6: ext = ".png"
             target = save_dir / f"http_{_uuid.uuid4().hex[:8]}{ext}"
-            req = urllib.request.Request(src_url, headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            })
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/126.0.0.0 Safari/537.36",
+            }
+            if referer:
+                headers["Referer"] = referer
+                # 推断 Origin(豆包 douyinvod 也认这个)
+                try:
+                    p = urllib.parse.urlparse(referer)
+                    headers["Origin"] = f"{p.scheme}://{p.netloc}"
+                except Exception: pass
+            req = urllib.request.Request(src_url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as r:
                 target.write_bytes(r.read())
+            return target if target.exists() and target.stat().st_size > 1024 else None
+        except Exception:
+            return None
+
+    def _download_via_browser(self, page, src_url: str, save_dir: Path) -> Optional[Path]:
+        """在浏览器内 fetch + base64 回传(走浏览器的 cookies/CORS)。
+        
+        用于 blob: URL 或签名验证严格的 CDN(豆包 douyinvod 等)。
+        urllib 拿不到的,这条路通常能拿到。
+        """
+        import base64, uuid as _uuid, urllib.parse
+        if not src_url or not page: return None
+        save_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # 在浏览器内 fetch + 转 base64
+            js = """
+            async (url) => {
+                try {
+                    const r = await fetch(url, { credentials: 'include' });
+                    if (!r.ok) return null;
+                    const blob = await r.blob();
+                    const buf = await blob.arrayBuffer();
+                    const bytes = new Uint8Array(buf);
+                    let bin = '';
+                    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                    return { b64: btoa(bin), type: blob.type, size: blob.size };
+                } catch(e) { return { error: String(e) }; }
+            }
+            """
+            result = page.evaluate(js, src_url)
+            if not result or "b64" not in result: return None
+            mime = result.get("type", "")
+            ext = ".mp4" if "mp4" in mime else (
+                  ".png" if "png" in mime else (
+                  ".jpg" if "jpeg" in mime else ".bin"))
+            target = save_dir / f"br_{_uuid.uuid4().hex[:8]}{ext}"
+            target.write_bytes(base64.b64decode(result["b64"]))
             return target if target.exists() and target.stat().st_size > 1024 else None
         except Exception:
             return None
