@@ -213,9 +213,62 @@ class GenerationBackend:
     enabled: bool = True
 
 
+# ---- 任务队列 ----
+# M2: 一次"生成"是一个 task,进队列,被 worker 派发给某个账号的 Playwright session
+TASK_PENDING   = "pending"
+TASK_RUNNING   = "running"
+TASK_AWAITING  = "awaiting"    # 等用户在浏览器手动完成 + 工具监听 Downloads
+TASK_DONE      = "done"
+TASK_FAILED    = "failed"
+TASK_CANCELED  = "canceled"
+
+# 任务类型
+TASK_TYPE_IMAGE    = "image"        # 生角色/场景/道具/分镜板图
+TASK_TYPE_VIDEO    = "video"        # 生 10s 视频片段
+TASK_TYPE_AI_CHAT  = "ai_chat"      # M3 AI 拆分镜等纯文本任务
+
+
+@dataclass
+class GenerationTask:
+    """生成任务。Worker 从队列取出后执行。"""
+    id: str = field(default_factory=lambda: _gid("task"))
+    project_id: str = ""
+    task_type: str = TASK_TYPE_IMAGE   # image / video / ai_chat
+    backend_id: str = "gpt-mirror"     # 哪个后端
+
+    title: str = ""                    # 显示用,如 "生角色 陆渊 三视图"
+    prompt: str = ""                   # 完整的 prompt 文本
+    reference_images: List[str] = field(default_factory=list)  # 要上传的参考图(本地路径)
+
+    # 绑定关系(任务完成后回写到哪个对象)
+    target_kind: str = ""              # character / scene / prop / shot / segment
+    target_id: str = ""
+
+    # 运行状态
+    status: str = TASK_PENDING
+    account_id: str = ""               # 派发给哪个账号
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    error: str = ""
+
+    # 产出
+    result_files: List[str] = field(default_factory=list)  # 下载下来的文件(相对 assets/)
+    result_text: str = ""              # 纯文本任务的结果(M3 拆分镜返回的 JSON 等)
+
+    def queued_label(self) -> str:
+        from .models import TASK_PENDING, TASK_RUNNING, TASK_AWAITING, TASK_DONE, TASK_FAILED
+        return {
+            TASK_PENDING:  "排队中",
+            TASK_RUNNING:  "执行中",
+            TASK_AWAITING: "等手动完成",
+            TASK_DONE:     "已完成",
+            TASK_FAILED:   "失败",
+            TASK_CANCELED: "已取消",
+        }.get(self.status, self.status)
+
+
 @dataclass
 class Account:
-    """账号 = 算力槽。豆包每账号每天 5 个视频额度。"""
     id: str
     name: str
     backend_id: str = "doubao"          # 属于哪个 backend

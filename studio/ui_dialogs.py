@@ -4,7 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QComboBox, QSpinBox, QPlainTextEdit, QDialogButtonBox, QFormLayout
+    QComboBox, QSpinBox, QPlainTextEdit, QDialogButtonBox, QFormLayout,
+    QFrame, QFileDialog, QMessageBox
 )
 
 from .theme import C
@@ -108,3 +109,150 @@ class NewEpisodeDialog(QDialog):
             synopsis=self.synopsis.toPlainText().strip(),
             emotional_arc=self.arc.text().strip(),
         )
+
+
+# ==================== M3: AI 拆分镜对话框 ====================
+class AISplitDialog(QDialog):
+    def __init__(self, parent=None, episode=None):
+        super().__init__(parent)
+        self.setWindowTitle("AI 拆分镜")
+        self.setMinimumWidth(560)
+        self.episode = episode
+
+        l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 18); l.setSpacing(12)
+        title = QLabel("把剧本扔给 GPT,自动拆分镜")
+        title.setStyleSheet("font-size: 16px; font-weight: 500;")
+        l.addWidget(title)
+
+        hint = QLabel(
+            "GPT 会返回 JSON 分镜表(含 6 维度 + 衔接锚点)。"
+            "应用 3-5 镜/段密度规则。"
+        )
+        hint.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        hint.setWordWrap(True)
+        l.addWidget(hint)
+
+        f = QFormLayout(); f.setSpacing(10)
+        self.seg_count = QSpinBox(); self.seg_count.setRange(1, 20); self.seg_count.setValue(2)
+        self.seg_count.setSuffix(" 段")
+        f.addRow("视频段数", self.seg_count)
+        self.shots_per_seg = QSpinBox(); self.shots_per_seg.setRange(2, 6); self.shots_per_seg.setValue(4)
+        self.shots_per_seg.setSuffix(" 镜/段")
+        f.addRow("每段分镜数", self.shots_per_seg)
+        l.addLayout(f)
+
+        l.addWidget(QLabel("剧本(中文):"))
+        self.script = QPlainTextEdit()
+        self.script.setPlaceholderText(
+            "示例:陆渊从昏迷中醒来,发现身处废弃矿坑。\n"
+            "他的左臂浮现紫金色符文,意识到自己穿越了。\n"
+            "走出矿洞,发现远方洛阳城已被异种菌丝吞噬..."
+        )
+        if episode and episode.synopsis:
+            self.script.setPlainText(episode.synopsis)
+        self.script.setMinimumHeight(180)
+        l.addWidget(self.script)
+
+        b = QDialogButtonBox()
+        b.addButton("取消", QDialogButtonBox.RejectRole)
+        ok = b.addButton("发到 GPT 镜像", QDialogButtonBox.AcceptRole); ok.setObjectName("Primary")
+        b.accepted.connect(self.accept); b.rejected.connect(self.reject)
+        l.addWidget(b)
+
+    def get_result(self):
+        return self.script.toPlainText(), self.seg_count.value(), self.shots_per_seg.value()
+
+
+# ==================== M4: 导出对话框 ====================
+class ExportDialog(QDialog):
+    def __init__(self, parent=None, project_id="", episode=None):
+        super().__init__(parent)
+        self.setWindowTitle("导出")
+        self.setMinimumWidth(440)
+        self.project_id = project_id
+        self.episode = episode
+
+        l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 20); l.setSpacing(14)
+        title = QLabel(f"导出:第 {episode.number} 集 - {episode.title or ''}")
+        title.setStyleSheet("font-size: 16px; font-weight: 500;")
+        l.addWidget(title)
+
+        # 1. PDF 故事板
+        pdf_card = QFrame(); pdf_card.setObjectName("Card")
+        pl = QVBoxLayout(pdf_card); pl.setContentsMargins(14, 12, 14, 12); pl.setSpacing(4)
+        pt = QLabel("📄  PDF 故事板"); pt.setStyleSheet("font-weight: 500;")
+        pl.addWidget(pt)
+        pd = QLabel(f"输出含每镜参考图 + 6 维度文字的 PDF。共 {len(episode.shots)} 镜。")
+        pd.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        pd.setWordWrap(True)
+        pl.addWidget(pd)
+        pdf_btn = QPushButton("导出 PDF")
+        pdf_btn.setObjectName("Primary")
+        pdf_btn.clicked.connect(self._export_pdf)
+        pl.addWidget(pdf_btn)
+        l.addWidget(pdf_card)
+
+        # 2. 视频拼接
+        seg_count = sum(1 for s in episode.segments if s.generated_video) if episode.segments else 0
+        vid_card = QFrame(); vid_card.setObjectName("Card")
+        vl = QVBoxLayout(vid_card); vl.setContentsMargins(14, 12, 14, 12); vl.setSpacing(4)
+        vt = QLabel("🎬  视频拼接"); vt.setStyleSheet("font-weight: 500;")
+        vl.addWidget(vt)
+        vd = QLabel(f"用 ffmpeg 把本集所有 10s 段拼成成片。已生成段数:{seg_count}")
+        vd.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        vd.setWordWrap(True)
+        vl.addWidget(vd)
+        vid_btn = QPushButton("拼接视频")
+        vid_btn.setObjectName("Primary")
+        vid_btn.setEnabled(seg_count > 0)
+        vid_btn.clicked.connect(self._export_video)
+        vl.addWidget(vid_btn)
+        l.addWidget(vid_card)
+
+        # 关闭
+        b = QDialogButtonBox()
+        b.addButton("关闭", QDialogButtonBox.RejectRole)
+        b.rejected.connect(self.reject)
+        l.addWidget(b)
+
+    def _export_pdf(self):
+        from .exporter import export_storyboard_pdf, HAS_REPORTLAB
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存 PDF 故事板", f"第{self.episode.number}集_故事板.pdf",
+            "PDF (*.pdf);;HTML (*.html)"
+        )
+        if not path: return
+        from pathlib import Path
+        try:
+            ok = export_storyboard_pdf(self.project_id, self.episode.id, Path(path))
+            if ok:
+                hint = "" if HAS_REPORTLAB else " (reportlab 未装,自动转为 HTML)"
+                QMessageBox.information(self, "导出成功", f"已导出 → {path}{hint}")
+            else:
+                QMessageBox.warning(self, "导出失败", "导出过程出错,请看日志")
+        except Exception as e:
+            QMessageBox.critical(self, "异常", str(e))
+
+    def _export_video(self):
+        from .exporter import concat_episode, ffmpeg_available
+        if not ffmpeg_available():
+            QMessageBox.warning(
+                self, "缺 ffmpeg",
+                "未检测到 ffmpeg。\n"
+                "macOS: brew install ffmpeg\n"
+                "Ubuntu: sudo apt install ffmpeg\n"
+                "Windows: 下载 ffmpeg.exe 加入 PATH"
+            ); return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存拼接视频", f"第{self.episode.number}集.mp4", "MP4 (*.mp4)"
+        )
+        if not path: return
+        from pathlib import Path
+        try:
+            ok = concat_episode(self.project_id, self.episode.id, Path(path), crossfade_seconds=0.0)
+            if ok:
+                QMessageBox.information(self, "拼接完成", f"已生成 → {path}")
+            else:
+                QMessageBox.warning(self, "失败", "ffmpeg 拼接失败,可能是片段编码参数不一致")
+        except Exception as e:
+            QMessageBox.critical(self, "异常", str(e))

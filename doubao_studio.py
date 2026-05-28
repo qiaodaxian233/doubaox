@@ -109,6 +109,18 @@ class MainWindow(QMainWindow):
         self.editor.log.connect(self.log.info)
         self.assets.log.connect(self.log.info)
 
+        # M2: Worker(可用时才启)
+        from studio.playwright_worker import get_worker
+        from studio.playwright_session import HAS_PLAYWRIGHT
+        self.worker = get_worker()
+        self.worker.log.connect(self.log.info)
+        if HAS_PLAYWRIGHT:
+            self.worker.start()
+            self.log.info("✓ Playwright 已就绪 — 任务进队列后自动派发")
+        else:
+            self.log.info("⚠ Playwright 未安装 — 「🤖 用 GPT 生成」会退化为复制 prompt + 开浏览器手动操作")
+            self.log.info("   装好运行: pip install playwright && playwright install chromium")
+
     def _on_project_selected(self, pid: str):
         if pid:
             self.editor.set_context(pid, "overview")

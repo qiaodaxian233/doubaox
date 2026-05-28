@@ -53,6 +53,39 @@ def _copy_and_open(text: str, backend_id: str) -> str:
     return backend_id
 
 
+def _enqueue_task(project_id: str, task_type: str, backend_id: str,
+                  title: str, prompt: str,
+                  target_kind: str = "", target_id: str = "",
+                  reference_images: list = None) -> str:
+    """M2 路径:把任务进队列;同时复制剪贴板作为 fallback,Worker 未装时退化为开浏览器。"""
+    from .models import GenerationTask
+    from .task_queue import get_queue
+    from .playwright_worker import get_worker
+
+    QApplication.clipboard().setText(prompt)   # 剪贴板兜底
+
+    task = GenerationTask(
+        project_id=project_id,
+        task_type=task_type,
+        backend_id=backend_id,
+        title=title,
+        prompt=prompt,
+        target_kind=target_kind,
+        target_id=target_id,
+        reference_images=reference_images or [],
+    )
+    get_queue().enqueue(task)
+
+    worker = get_worker()
+    if not worker.is_available():
+        b = ST.get_backend(backend_id)
+        if b and b.url: _open_url(b.url)
+        return f"已入队 · Playwright 未装,打开浏览器手动 (prompt 已复制)"
+    if not worker._running:
+        worker.start()
+    return f"已入队 → Worker 自动派发"
+
+
 class EditorPanel(QFrame):
     """中栏容器。"""
     log = Signal(str)
@@ -544,8 +577,14 @@ class CharactersView(_AssetGridView):
         full = f"{header}\n\n**结构化面部数据:**\n\n```json\n{struct}\n```"
         if c.notes:
             full += f"\n\n**备注:** {c.notes}"
-        backend = _copy_and_open(full, "gpt-mirror")
-        self.log.emit(f"已复制三视图 prompt ({len(full)} 字) + 打开 {backend} → 粘贴生成")
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="image", backend_id="gpt-mirror",
+            title=f"角色三视图: {c.name}",
+            prompt=full,
+            target_kind="character", target_id=c.id,
+        )
+        self.log.emit(f"{msg} — 角色三视图: {c.name}")
 
 
 # =========================================================================
@@ -674,8 +713,14 @@ class ScenesView(_AssetGridView):
             f"场景参数:\n```json\n{body}\n```\n\n"
             f"画质要求:8K 超高清,电影级光影,材质细节清晰。"
         )
-        backend = _copy_and_open(full, "gpt-mirror")
-        self.log.emit(f"已复制场景 prompt + 打开 {backend}")
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="image", backend_id="gpt-mirror",
+            title=f"场景图: {s.name}",
+            prompt=full,
+            target_kind="scene", target_id=s.id,
+        )
+        self.log.emit(f"{msg} — 场景: {s.name}")
 
 
 # =========================================================================
@@ -755,8 +800,14 @@ class PropsView(_AssetGridView):
             f"道具描述:{p.description or p.name}\n\n"
             f"要求:细节锐利,材质清晰,无水印,正面 + 透视两个角度并排展示。"
         )
-        backend = _copy_and_open(full, "gpt-mirror")
-        self.log.emit(f"已复制道具 prompt + 打开 {backend}")
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="image", backend_id="gpt-mirror",
+            title=f"道具: {p.name}",
+            prompt=full,
+            target_kind="prop", target_id=p.id,
+        )
+        self.log.emit(f"{msg} — 道具: {p.name}")
 
 
 # =========================================================================
@@ -781,6 +832,25 @@ class EpisodesView(QFrame):
         title = QLabel("分镜表"); title.setObjectName("H2")
         tbl.addWidget(title)
         tbl.addStretch()
+
+        # M3: AI 拆分镜
+        self.ai_split_btn = QPushButton("🧠 AI 拆分镜")
+        self.ai_split_btn.setObjectName("Subtle")
+        self.ai_split_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.ai_split_btn.setToolTip("把剧本扔给 GPT 镜像,自动返回 JSON 分镜表")
+        self.ai_split_btn.clicked.connect(self._on_ai_split)
+        self.ai_split_btn.setEnabled(False)
+        tbl.addWidget(self.ai_split_btn)
+
+        # M4: 导出
+        self.export_btn = QPushButton("📥 导出")
+        self.export_btn.setObjectName("Subtle")
+        self.export_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.export_btn.setToolTip("PDF 故事板 / 视频拼接")
+        self.export_btn.clicked.connect(self._on_export)
+        self.export_btn.setEnabled(False)
+        tbl.addWidget(self.export_btn)
+
         new_ep = QPushButton("＋ 新建集"); new_ep.setObjectName("Primary")
         new_ep.setCursor(QCursor(Qt.PointingHandCursor))
         new_ep.clicked.connect(self._on_new_episode)
@@ -844,10 +914,15 @@ class EpisodesView(QFrame):
         if not current:
             self.current_ep = None
             self.add_shot_btn.setEnabled(False)
+            self.ai_split_btn.setEnabled(False)
+            self.export_btn.setEnabled(False)
             self._render_shots(); return
         eid = current.data(Qt.UserRole)
         self.current_ep = next((e for e in self.episodes if e.id == eid), None)
-        self.add_shot_btn.setEnabled(self.current_ep is not None)
+        has_ep = self.current_ep is not None
+        self.add_shot_btn.setEnabled(has_ep)
+        self.ai_split_btn.setEnabled(has_ep)
+        self.export_btn.setEnabled(has_ep)
         self.selected_shot_id = None
         self._render_shots()
         self._render_shot_detail(None)
@@ -1252,13 +1327,31 @@ class EpisodesView(QFrame):
 
     def _gen_shot_image(self, shot: Shot):
         text = self._build_image_prompt(shot)
-        backend = _copy_and_open(text, "gpt-mirror")
-        self.log.emit(f"已复制图 prompt + 打开 {backend} → 粘贴生成参考图")
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="image", backend_id="gpt-mirror",
+            title=f"分镜 #{shot.number} 参考图",
+            prompt=text,
+            target_kind="shot", target_id=shot.id,
+        )
+        self.log.emit(f"{msg} — 分镜 #{shot.number} 图")
 
     def _gen_shot_video(self, shot: Shot):
         text = self._build_video_prompt(shot)
-        backend = _copy_and_open(text, "doubao")
-        self.log.emit(f"已复制视频 prompt + 打开 {backend} → 粘贴 + 上传参考图生成")
+        # 如果本镜已有参考图,自动作为上传的图传给豆包
+        refs = []
+        if shot.generated_image:
+            p = ST.asset_full_path(self.pid, shot.generated_image)
+            if p.exists(): refs.append(str(p))
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="video", backend_id="doubao",
+            title=f"分镜 #{shot.number} 视频",
+            prompt=text,
+            target_kind="shot", target_id=shot.id,
+            reference_images=refs,
+        )
+        self.log.emit(f"{msg} — 分镜 #{shot.number} 视频 (参考图 {len(refs)})")
 
     def _import_shot_image(self, shot: Shot):
         path, _ = QFileDialog.getOpenFileName(
@@ -1283,3 +1376,49 @@ class EpisodesView(QFrame):
         ST.save_episode(self.pid, self.current_ep)
         self._render_shots(); self._render_shot_detail(shot)
         self.log.emit(f"导入分镜 #{shot.number} 视频")
+
+    # ==================== M3: AI 拆分镜 ====================
+    def _on_ai_split(self):
+        if not self.current_ep: return
+        from .ui_dialogs import AISplitDialog, ExportDialog
+        dlg = AISplitDialog(self, self.current_ep)
+        if dlg.exec() != dlg.DialogCode.Accepted: return
+        script, seg_count, shots_per_seg = dlg.get_result()
+        if not script.strip():
+            QMessageBox.information(self, "提示", "剧本不能为空"); return
+
+        from .prompts import get_template, render_template
+        chars = ST.load_characters(self.pid)
+        scenes = ST.load_scenes(self.pid)
+        proj = next((p for p in ST.list_projects() if p.id == self.pid), None)
+
+        chars_str = ", ".join(c.name for c in chars) if chars else "(无)"
+        scenes_str = ", ".join(s.name for s in scenes) if scenes else "(无)"
+        style = proj.style if proj else ""
+
+        tpl = get_template("tpl-m3-split")
+        full_prompt = render_template(
+            tpl, script=script,
+            segment_count=str(seg_count), shots_per_segment=str(shots_per_seg),
+            style=style, characters=chars_str, scenes=scenes_str,
+        )
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="ai_chat", backend_id="gpt-mirror",
+            title=f"AI 拆分镜:第 {self.current_ep.number} 集",
+            prompt=full_prompt,
+            target_kind="episode", target_id=self.current_ep.id,
+        )
+        QMessageBox.information(
+            self, "AI 拆分镜已入队",
+            f"{msg}\n\n返回 JSON 后,通过下方「导入 JSON 分镜表」按钮手动导入(M3 阶段)"
+        )
+        self.log.emit(f"{msg}")
+
+    # ==================== M4: 导出 ====================
+    def _on_export(self):
+        if not self.current_ep: return
+        from .ui_dialogs import ExportDialog
+        dlg = ExportDialog(self, self.pid, self.current_ep)
+        dlg.exec()
+

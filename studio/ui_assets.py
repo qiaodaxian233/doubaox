@@ -52,28 +52,11 @@ class AssetsPanel(QFrame):
         backend_scroll.setMaximumHeight(360)
         root.addWidget(backend_scroll)
 
-        # 2. 任务队列
+        # 2. 任务队列(真实)
         root.addWidget(Hline(soft=True))
-        queue_box = QFrame()
-        ql = QVBoxLayout(queue_box); ql.setContentsMargins(20, 12, 20, 12); ql.setSpacing(6)
-        qh = QHBoxLayout()
-        qt = QLabel("任务队列")
-        qt.setStyleSheet(f"color: {C['muted']}; font-family: 'JetBrains Mono', monospace; "
-                         f"font-size: 10px; letter-spacing: 1px;")
-        qh.addWidget(qt); qh.addStretch()
-        m2 = QLabel("M2 接通")
-        m2.setStyleSheet(f"""
-            background: {C['surface_alt']}; color: {C['muted']};
-            font-size: 9.5px; padding: 1px 6px; border-radius: 3px;
-            font-family: 'JetBrains Mono', monospace;
-        """)
-        qh.addWidget(m2)
-        ql.addLayout(qh)
-        empty_q = QLabel("接通 Playwright 后,这里显示等待中的图片/视频生成任务")
-        empty_q.setStyleSheet(f"color: {C['muted']}; font-size: 11px; padding: 4px 0;")
-        empty_q.setWordWrap(True)
-        ql.addWidget(empty_q)
-        root.addWidget(queue_box)
+        self.queue_panel = QueuePanel()
+        self.queue_panel.log.connect(self.log)
+        root.addWidget(self.queue_panel)
 
         # 3. 素材库
         root.addWidget(Hline(soft=True))
@@ -408,3 +391,114 @@ class BackendPanel(QFrame):
         self.accounts = [a for a in self.accounts if a.id != acc_id]
         ST.save_accounts(self.accounts)
         self._render()
+
+
+# ==============================================================
+class QueuePanel(QFrame):
+    """实时任务队列显示。订阅 TaskQueue.changed 信号自动刷新。"""
+    log = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        from .task_queue import get_queue
+        self.queue = get_queue()
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 12, 20, 12); v.setSpacing(6)
+
+        hd = QHBoxLayout()
+        t = QLabel("任务队列")
+        t.setStyleSheet(f"color: {C['muted']}; font-family: 'JetBrains Mono', monospace; "
+                        f"font-size: 10px; letter-spacing: 1px;")
+        hd.addWidget(t)
+        hd.addStretch()
+        self.status_lbl = QLabel("")
+        self.status_lbl.setStyleSheet(f"color: {C['muted']}; font-size: 9.5px;")
+        hd.addWidget(self.status_lbl)
+        clear_btn = QPushButton("清历史"); clear_btn.setObjectName("IconOnly")
+        clear_btn.setStyleSheet(f"color: {C['muted']}; font-size: 10px;")
+        clear_btn.clicked.connect(self._on_clear)
+        hd.addWidget(clear_btn)
+        v.addLayout(hd)
+
+        self.list_box = QVBoxLayout(); self.list_box.setSpacing(4)
+        v.addLayout(self.list_box)
+
+        self.queue.changed.connect(self._render)
+        self._render()
+
+    def _render(self):
+        while self.list_box.count():
+            it = self.list_box.takeAt(0); w = it.widget()
+            if w: w.deleteLater()
+
+        all_tasks = self.queue.recent(8)
+        pending = self.queue.pending()
+        active = self.queue.active()
+        self.status_lbl.setText(f"{len(pending)} 待 · {len(active)} 跑")
+
+        if not all_tasks:
+            tip = QLabel("队列空。点角色/分镜的「🤖 用 GPT 生成」就会有任务进来。")
+            tip.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+            tip.setWordWrap(True)
+            self.list_box.addWidget(tip)
+            return
+
+        for t in all_tasks:
+            self.list_box.addWidget(self._make_task_row(t))
+
+    def _make_task_row(self, t) -> QFrame:
+        from .models import (
+            TASK_PENDING, TASK_RUNNING, TASK_AWAITING, TASK_DONE, TASK_FAILED, TASK_CANCELED,
+        )
+        row = QFrame()
+        status_colors = {
+            TASK_PENDING:  C["muted"],
+            TASK_RUNNING:  C["info"],
+            TASK_AWAITING: C["warning"],
+            TASK_DONE:     C["online"],
+            TASK_FAILED:   C["danger"],
+            TASK_CANCELED: C["muted"],
+        }
+        bg_colors = {
+            TASK_DONE:     C["surface_alt"],
+            TASK_FAILED:   "#fef2f2",
+            TASK_RUNNING:  "#eff6ff",
+            TASK_AWAITING: "#fffbeb",
+        }
+        bg = bg_colors.get(t.status, C["surface_alt"])
+        fg = status_colors.get(t.status, C["muted"])
+        row.setStyleSheet(f"background: {bg}; border-radius: 5px;")
+
+        h = QHBoxLayout(row); h.setContentsMargins(8, 6, 8, 6); h.setSpacing(6)
+
+        # icon
+        icon_map = {"image": "🖼", "video": "🎬", "ai_chat": "🧠"}
+        ic = QLabel(icon_map.get(t.task_type, "•"))
+        ic.setStyleSheet("font-size: 12px;")
+        h.addWidget(ic)
+
+        # title
+        title = QLabel(t.title or "(未命名任务)")
+        title.setStyleSheet(f"font-size: 11px; color: {C['ink']};")
+        h.addWidget(title, 1)
+
+        # status
+        st = QLabel(t.queued_label())
+        st.setStyleSheet(f"color: {fg}; font-family: 'JetBrains Mono', monospace; "
+                         f"font-size: 9.5px;")
+        h.addWidget(st)
+
+        # 操作 - 仅 pending 时可取消
+        if t.status == TASK_PENDING:
+            x = QPushButton("✕"); x.setObjectName("IconOnly")
+            x.setFixedSize(18, 18)
+            x.clicked.connect(lambda: (self.queue.cancel(t.id),
+                                       self.log.emit(f"取消任务: {t.title}")))
+            h.addWidget(x)
+
+        return row
+
+    def _on_clear(self):
+        self.queue.clear_history()
+        self.log.emit("已清空任务历史")

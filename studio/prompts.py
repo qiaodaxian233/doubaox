@@ -218,6 +218,83 @@ DEFAULT_PROMPT_TEMPLATES = [
                    content="生成10秒小猫唱歌视频,要可爱表情,卡通舞台背景,镜头慢推"),
     PromptTemplate(id="p-2", category="通用", title="古风打斗", placeholders=[],
                    content="生成10秒古风打斗视频,水墨风,飞檐走壁,慢动作飞跃"),
+
+    # ==================== M3 AI 辅助:剧本→分镜表 ====================
+    PromptTemplate(
+        id="tpl-m3-split",
+        category="拆分镜",
+        title="剧本拆分镜(给 GPT-4o 用,返回 JSON)",
+        placeholders=["script", "segment_count", "shots_per_segment", "style", "characters", "scenes"],
+        content=(
+            "你是国际一流的动画电影分镜师。下面是一段剧本,请帮我拆成 {segment_count} 个 10 秒视频片段,"
+            "每段 {shots_per_segment} 个分镜。\n\n"
+            "项目风格:{style}\n"
+            "已定义角色:{characters}\n"
+            "已定义场景:{scenes}\n\n"
+            "**输出格式严格 JSON,不要任何解释文字,直接给我 JSON:**\n"
+            "```json\n"
+            "{{\n"
+            '  "segments": [\n'
+            '    {{\n'
+            '      "number": 1,\n'
+            '      "synopsis": "本段剧情",\n'
+            '      "shots": [\n'
+            '        {{\n'
+            '          "number": 1,\n'
+            '          "duration": 2.5,\n'
+            '          "scene_name": "矿坑内部",\n'
+            '          "character_names": ["陆渊"],\n'
+            '          "shot_size": "中景",\n'
+            '          "camera_movement": "推",\n'
+            '          "action": "陆渊低头看左手",\n'
+            '          "lighting": "紫光从下方照亮面部",\n'
+            '          "sound": "卷轴翻动声",\n'
+            '          "dialogue": "",\n'
+            '          "transition_anchor": "陆渊低头看手姿态,紫光最亮"\n'
+            '        }}\n'
+            '      ]\n'
+            '    }}\n'
+            '  ]\n'
+            "}}\n"
+            "```\n\n"
+            "**硬性要求:**\n"
+            "- 每分镜 duration 必须 1.5-3.5 秒之间(单段 10s 装 3-5 个镜头)\n"
+            "- 每镜的 transition_anchor 必须能作为下一镜的起始姿态(动作连贯)\n"
+            "- character_names 用已定义角色,不要凭空造\n"
+            "- shot_size 选项:远景/全景/中景/近景/特写/大特写/过肩/反打\n"
+            "- camera_movement 选项:固定/推/拉/摇/移/跟/旋转/俯仰\n\n"
+            "**剧本:**\n{script}"
+        ),
+    ),
+
+    # M3:分镜板大图自动拼装(给 GPT 用)
+    PromptTemplate(
+        id="tpl-m3-board-compose",
+        category="分镜板",
+        title="分镜板大图自动拼装(段级)",
+        placeholders=["aspect_ratio", "characters_block", "scenes_block", "shots_block",
+                      "style", "mood"],
+        content=(
+            "请生成一张高质量、专业影视预制作风格的故事板设定图,横版 {aspect_ratio},4K 超清,"
+            "图文结合,排版清晰,设计感高级。\n\n"
+            "**整张图分为五个主要区域,主区采用写实电影感,机位俯视区采用极简 schematic 线稿风格"
+            "(灰底白线,与主区视觉风格明显区分,机位用数字编号文字标注,不要红色圆点或摄像机图标):**\n\n"
+            "【一、左侧:角色设定区 CHARACTER DESIGN】\n{characters_block}\n\n"
+            "【二、中间:场景设计区 ENVIRONMENT】\n{scenes_block}\n\n"
+            "【三、中间下方:俯视走位与机位规划区(schematic 线稿风格)】\n"
+            "用极简灰底白线绘制俯视图,展示场景中的人物位置、道具摆放、摄影机机位和镜头方向。"
+            "机位用阿拉伯数字编号文字标注(1, 2, 3...),不要红色圆点、不要摄像机图标、"
+            "不要箭头,只用文字和细线条。\n\n"
+            "【四、右侧:8 格故事分镜区 STORYBOARD】\n{shots_block}\n\n"
+            "【五、底部:风格说明文字区】\n"
+            "灯光/情绪/风格:{style}\n"
+            "情绪关键词:{mood}\n\n"
+            "**注意:**\n"
+            "- 主分镜区(8 格)采用写实电影感,角色和场景细节饱满\n"
+            "- 机位俯视区严格保持极简 schematic 线稿风格,不能与主区混淆\n"
+            "- 不要在故事板任何区域出现红色圆点、摄像机图标、箭头编号(避免误入视频)"
+        ),
+    ),
 ]
 
 

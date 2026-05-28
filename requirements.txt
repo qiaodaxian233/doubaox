@@ -1,14 +1,17 @@
 # DoubaoStudio v3 - 短剧工厂
-#
-# M1 阶段必装(UI + 持久化)
+
+# M1 必装(UI + 持久化)
 PySide6>=6.6.0
 
-# M2 阶段(浏览器自动化生成)— 之后启用
-# playwright>=1.40.0
-#
-# M2 还会用到无水印解析(可选,不装也能跑):
-# git+https://github.com/ihmily/doubao-nomark
+# M2 强烈推荐(自动化生成。装完还要跑 `playwright install chromium`)
+playwright>=1.40.0
 
-# M4 阶段(视频拼接导出)
-# ffmpeg-python>=0.2.0
-# pypdf>=4.0.0
+# M4 PDF 故事板导出(可选;不装则退化到 HTML 导出)
+reportlab>=4.0.0
+
+# 系统依赖(非 pip):
+#   ffmpeg  — M4 视频拼接用。macOS: brew install ffmpeg / Ubuntu: apt install ffmpeg
+#   chrome  — M2 Playwright 优先用本机 Chrome(指纹更真实);没装会退化到 chromium
+
+# 可选:豆包视频去水印(M2 高阶)
+# git+https://github.com/ihmily/doubao-nomark
