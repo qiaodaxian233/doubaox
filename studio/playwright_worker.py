@@ -295,8 +295,14 @@ class Worker(QObject):
             elif profile.input_box:
                 # 普通模式:走诊断版,失败时把详情吐到 log + 写快照
                 diag = session.fill_with_diagnostics(profile.input_box, task.prompt)
+                method = diag.get("fill_method") or "?"
+                navigated = diag.get("navigated", False)
                 if diag.get("ok"):
-                    self.log.emit(f"[{task.title}] 已自动填入 prompt ({prompt_len} 字)")
+                    nav_tag = " (点击触发了页面跳转,已自动重定位)" if navigated else ""
+                    self.log.emit(
+                        f"[{task.title}] 已自动填入 prompt ({prompt_len} 字, "
+                        f"方式={method}){nav_tag}"
+                    )
                 else:
                     self.log.emit(f"[{task.title}] 自动填 prompt 失败,请在浏览器手动粘贴(已在剪贴板)")
                     # === 详细诊断 ===
@@ -318,12 +324,12 @@ class Worker(QObject):
                         if ci.get("placeholder"):
                             self.log.emit(f"[{task.title}] 元素 placeholder: {ci['placeholder']!r}")
                     ub, ua = diag.get("url_before") or "", diag.get("url_after") or ""
-                    if ub != ua:
+                    if navigated:
                         self.log.emit(f"[{task.title}] ⚠ click 触发了页面跳转: {ub} → {ua}")
                     else:
                         self.log.emit(f"[{task.title}] url 未变: {ua}")
                     self.log.emit(
-                        f"[{task.title}] readback: typed_length={diag.get('typed_length')} "
+                        f"[{task.title}] 注入路径={method} readback={diag.get('typed_length')} 字 "
                         f"error={diag.get('error')!r}"
                     )
                     # 写完整快照(截图 + DOM + probe)
@@ -341,7 +347,7 @@ class Worker(QObject):
                                 f"send_btns={len(probe.get('send_buttons') or [])}"
                             )
                             if probe.get("error_banners"):
-                                self.log.emit(f"[{task.title}] ⚠ 页面错误提示: {probe['error_banners']}")
+                                self.log.emit(f"[{task.title}] ⚠ 页面提示元素: {probe['error_banners']}")
                             if probe.get("visible_login_hints"):
                                 self.log.emit(f"[{task.title}] ⚠ 页面仍可见登录按钮: {probe['visible_login_hints']}")
                     except Exception as e:

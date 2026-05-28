@@ -240,53 +240,60 @@ class AccountSession:
         return self._page
 
     def fill_clipboard_paste(self, selector: str, text: str) -> bool:
-        """选择器找到 input,聚焦,然后 type 文本(慢速,模拟人手)。失败返回 False。"""
-        if not self._page: return False
-        try:
-            el = self._page.wait_for_selector(selector, timeout=5000)
-            if not el: return False
-            el.click()
-            self._page.keyboard.type(text, delay=10)
-            return True
-        except Exception as e:
-            self.status.error = str(e)
-            return False
+        """填 prompt 的薄包装 — 内部走 fill_with_diagnostics 的 robust 路径,
+        只返回成功 bool。失败原因依旧落到 self.status.error。
+
+        历史上叫这个名字是因为最早实现是 clipboard paste,后来换 keyboard.type,
+        现在又换成 React-safe value setter / execCommand insertText — 名字保留兼容。
+        """
+        diag = self.fill_with_diagnostics(selector, text)
+        return bool(diag.get("ok"))
 
     def fill_with_diagnostics(self, selector_chain: str, text: str) -> dict:
-        """诊断版填写:返回详细结果字典而不是简单 bool。
-
-        失败时调用方能拿到:
-          - candidates: 每个分号分隔的 selector 在页面里匹配到几个元素
-          - chosen_selector / chosen_info: 最终被 click 的那个元素详情(tag/id/可见/可编辑)
-          - url_before / url_after: 操作前后的 page.url(检测 click 触发了页面跳转)
-          - typed_value / typed_length: 填完后 readback,确认 type 是不是真写进去了
-          - error: 异常或失败原因
+        """诊断版填写。策略:
+          1. 探每个 selector 的命中数(用于失败时定位)
+          2. 抓命中元素详情(tag/id/可见/可编辑/placeholder)
+          3. click 一下(触发任何 SPA 路由 + 上焦点),然后等导航/loadState 稳定
+          4. **重新找元素**(click 触发了 / 跳转,原 ref 已失效)
+          5. 用 React-safe 注入(value setter + dispatch input/change 事件 ||
+             contenteditable 用 execCommand insertText)— 不走 keyboard.type,
+             避免 prompt 里的 \\n 在 ChatGPT 类应用被当作 Enter 提前发送(分段发 bug)
+          6. readback 验证写进去了
+        返回的 dict 包含全部诊断字段供调用方落 log。
         """
         info = {
             "ok": False, "error": "",
-            "url_before": "", "url_after": "",
+            "url_before": "", "url_after": "", "navigated": False,
             "candidates": [], "chosen_selector": "", "chosen_info": {},
+            "fill_method": "",
             "typed_value": "", "typed_length": 0,
         }
         page = self._page
         if not page:
             info["error"] = "page 不存在(session 未启动?)"
             return info
-        try:
-            info["url_before"] = page.url
+        try: info["url_before"] = page.url
         except Exception: pass
 
-        # 1. 逐个 selector 探匹配数,选第一个有命中的
         selectors = [s.strip() for s in selector_chain.split(",") if s.strip()]
-        chosen = None
+
+        def first_match():
+            for sel in selectors:
+                try:
+                    if page.query_selector_all(sel):
+                        return sel
+                except Exception: continue
+            return None
+
+        # 1. 探每个 selector 的命中数
         for sel in selectors:
             try:
                 count = len(page.query_selector_all(sel))
             except Exception:
                 count = -1
             info["candidates"].append({"selector": sel[:60], "count": count})
-            if chosen is None and isinstance(count, int) and count > 0:
-                chosen = sel
+
+        chosen = first_match()
         if not chosen:
             info["error"] = "所有 selector 在页面上都 0 命中"
             try: info["url_after"] = page.url
@@ -294,7 +301,7 @@ class AccountSession:
             return info
         info["chosen_selector"] = chosen
 
-        # 2. 抓首个命中元素详情
+        # 2. 元素详情(在 click 前抓,因为之后可能就跳到新页了)
         try:
             el = page.query_selector(chosen)
             if el:
@@ -322,14 +329,15 @@ class AccountSession:
         except Exception as e:
             info["chosen_info"] = {"probe_error": str(e)}
 
-        # 3. click + type,带跳转检测
+        # 3. click → 等导航 → 重新找元素 → React-safe 注入
         try:
             el = page.wait_for_selector(chosen, timeout=5000)
             if not el:
-                info["error"] = "wait_for_selector 返回 None(刚才探到但 5s 内又消失了)"
+                info["error"] = "wait_for_selector 返回 None(刚探到但 5s 内又消失了)"
                 try: info["url_after"] = page.url
                 except Exception: pass
                 return info
+
             try:
                 el.click(timeout=3000)
             except Exception as ce:
@@ -337,47 +345,114 @@ class AccountSession:
                 try: info["url_after"] = page.url
                 except Exception: pass
                 return info
-            # click 完短等,捕获潜在跳转
-            try: page.wait_for_load_state("domcontentloaded", timeout=800)
+
+            # 等任何潜在的 SPA 路由/重渲染稳下来
+            try: page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except Exception: pass
+            try: page.wait_for_load_state("networkidle", timeout=2500)
             except Exception: pass
             try: info["url_after"] = page.url
             except Exception: pass
-            if info["url_after"] and info["url_before"] and info["url_after"] != info["url_before"]:
-                info["error"] = (
-                    f"click 后页面已跳到 {info['url_after']},原输入框可能已不存在"
+            info["navigated"] = bool(info["url_before"] and info["url_after"]
+                                      and info["url_before"] != info["url_after"])
+
+            # 关键:重新找元素(URL 变没变都重找一次最稳)
+            new_chosen = first_match()
+            if not new_chosen:
+                info["error"] = "click 后所有 selector 都 0 命中"
+                if info["navigated"]:
+                    info["error"] += f"(且页面跳到了 {info['url_after']},新页 DOM 可能还在渲染)"
+                return info
+            if new_chosen != chosen:
+                info["chosen_selector"] = f"{chosen} → {new_chosen}"
+                chosen = new_chosen
+
+            el = page.query_selector(chosen)
+            if not el:
+                info["error"] = "click 后 query_selector 返回 None"
+                return info
+
+            # 焦点
+            try: el.focus()
+            except Exception: pass
+
+            # 4. React-safe 注入:
+            #    - textarea / input: 用原生 value setter + dispatch input/change
+            #      (React 用 fiber 跟踪 value,直接 .value = ... 不会触发 onChange,
+            #       必须通过 prototype 上的 setter 才能写入 React 内部状态)
+            #    - contenteditable: 用 execCommand('insertText'),
+            #      这是 Slate / ProseMirror / Lexical 都听的标准编辑器 API
+            injection_script = r"""
+            (el, val) => {
+              try {
+                const tag = el.tagName;
+                if (tag === 'TEXTAREA' || tag === 'INPUT') {
+                  const proto = tag === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                  const setter = desc && desc.set;
+                  if (setter) setter.call(el, val);
+                  else el.value = val;
+                  el.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                  el.dispatchEvent(new Event('change', { bubbles: true }));
+                  return 'value_setter';
+                }
+                // contenteditable
+                el.focus();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                // execCommand insertText 走浏览器内置 insertion pipeline,
+                // 富文本编辑器(Slate/ProseMirror/Lexical/Quill)都监听这个
+                const ok = document.execCommand && document.execCommand('insertText', false, val);
+                if (ok) return 'contenteditable_execCommand';
+                // 退化方案:直接 textContent + InputEvent
+                el.textContent = val;
+                el.dispatchEvent(new InputEvent('input', {
+                  bubbles: true, inputType: 'insertText', data: val,
+                }));
+                return 'contenteditable_textContent';
+              } catch (e) {
+                return 'error:' + (e && e.message || String(e));
+              }
+            }
+            """
+            try:
+                method = el.evaluate(injection_script, text)
+            except Exception as ie:
+                info["error"] = f"value 注入异常: {ie}"
+                return info
+            info["fill_method"] = method or ""
+            if isinstance(method, str) and method.startswith("error:"):
+                info["error"] = method
+                return info
+
+            # 5. readback 验证
+            try:
+                v = el.evaluate(
+                    "e => (e.value !== undefined && e.value !== null) "
+                    "? e.value : (e.textContent || '')"
                 )
-                return info
-            # 真 type
-            try:
-                page.keyboard.type(text, delay=10)
-            except Exception as te:
-                info["error"] = f"keyboard.type 失败: {te}"
-                return info
-            try: info["url_after"] = page.url
-            except Exception: pass
-            # 4. readback:确认 type 进去了
-            try:
-                el2 = page.query_selector(chosen)
-                if el2:
-                    v = el2.evaluate(
-                        "e => (e.value !== undefined && e.value !== null) "
-                        "? e.value : (e.textContent || '')"
-                    )
-                    info["typed_value"] = (v or "")[:200]
-                    info["typed_length"] = len(v or "")
+                info["typed_value"] = (v or "")[:200]
+                info["typed_length"] = len(v or "")
             except Exception as re_:
                 info.setdefault("chosen_info", {})["readback_error"] = str(re_)
-            # 成功条件:readback 长度 >= 输入长度的一半(允许空白整理)
-            info["ok"] = info["typed_length"] >= max(1, len(text) // 2)
+
+            # 容差 90%(部分编辑器会把 \r\n 合并成 \n 之类)
+            info["ok"] = info["typed_length"] >= max(1, int(len(text) * 0.9))
             if not info["ok"] and not info["error"]:
                 info["error"] = (
-                    f"type 完成但 readback 只有 {info['typed_length']}/{len(text)} 字,"
-                    f"很可能 click 时焦点没真正进输入框,或者元素是只读"
+                    f"注入完成 ({info['fill_method']}) 但 readback 只有 "
+                    f"{info['typed_length']}/{len(text)} 字 — 元素可能是只读或被框架反写了"
                 )
         except Exception as e:
             info["error"] = f"诊断 fill 过程异常: {e}"
             try: info["url_after"] = page.url
             except Exception: pass
+
         self.status.error = info["error"]
         return info
 
