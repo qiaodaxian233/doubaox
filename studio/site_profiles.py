@@ -152,28 +152,41 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
             '[data-testid*="attach"], [data-testid*="upload"], '
             'button[aria-haspopup="menu"]'
         ),
-        # 视频生成入口 — 顶部模式切换按钮"视频生成"(用户实测)
-        # 不是 dropdown menuitem,是页面顶部独立 tab
+        # 视频生成入口 — 顶部模式切换按钮"视频生成"
         video_entry=(
             'button:has-text("视频生成"), '
             '[role="button"]:has-text("视频生成"), '
             'div.flex:has-text("视频生成"), '
             ':text-is("视频生成")'
         ),
-        # 生成结果容器
-        # 视频生成完成时容器 = data-plugin-identifier="block_type:2074"(用户实测)
+        # 下载按钮 — 视频右下角 hover 显示的下载图标(向下箭头 SVG)
+        # 实测:<div class="video-hover-button-group-..."><div class="action-button-..." data-popupid>
+        # worker 点之前会 hover 容器让按钮显示
+        download_btn=(
+            '[data-plugin-identifier="block_type:2074"] [class*="action-button"], '
+            '[class*="video-hover-button-group"] [class*="action-button"], '
+            '[class*="video-hover-button-group"] [tabindex="0"]'
+        ),
+        # 生成结果容器 — block_type:2074(用户实测)
         result_selector=(
             '[data-plugin-identifier="block_type:2074"], '
+            '[data-render-engine="node"][data-plugin-identifier], '
             '[data-testid*="message"][data-testid*="assistant"]'
         ),
-        # 视频 src 含 douyinvod 或 byteimg
+        # 视频元素 — Xgplayer 播放器内的 video + douyinvod CDN
         result_video_in=(
             '[data-plugin-identifier="block_type:2074"] video, '
+            '.xgplayer video, '
             'video[src*="douyinvod"], '
             'video[src*="byteimg"], '
             'video'
         ),
-        result_image_in='img[src*="lf3"], img[src*="byteimg"], img[src*="bytedance"]',
+        # 图片元素 — 排除视频封面(tplv-/watermark/video_dsz)
+        result_image_in=(
+            'img[src*="lf3"]:not([src*="watermark"]):not([src*="video_dsz"]):not([src*="tplv-"]), '
+            'img[src*="byteimg"]:not([src*="watermark"]):not([src*="video_dsz"]):not([src*="tplv-"]), '
+            'img[src*="bytedance"]:not([src*="watermark"]):not([src*="video_dsz"]):not([src*="tplv-"])'
+        ),
         quota_selector='[data-testid*="quota"], [class*="quota"]',
         # 字节跳动原生 UTF-8,无需 BOM
         txt_use_bom=False,

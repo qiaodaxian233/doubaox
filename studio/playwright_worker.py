@@ -353,7 +353,7 @@ class Worker(QObject):
 
             found_file = None
 
-            # 层 1: 自动点下载
+            # 层 1: 自动点下载(豆包 hover 才显示下载按钮 → 先 hover 容器)
             if profile.download_btn:
                 try:
                     page = session.page()
@@ -363,19 +363,44 @@ class Worker(QObject):
                             try:
                                 page.wait_for_selector(profile.result_selector, timeout=300_000)
                                 time.sleep(2)  # 给 SPA 一点渲染时间
-                            except Exception:
-                                pass
-                        # 用 expect_download 抓下载事件
-                        with page.expect_download(timeout=60_000) as dl_info:
-                            session.click(profile.download_btn)
-                        download = dl_info.value
-                        target = session_downloads / download.suggested_filename
-                        download.save_as(str(target))
-                        if target.exists():
-                            found_file = target
-                            self.log.emit(f"[{task.title}] 自动下载成功: {target.name}")
+                            except Exception: pass
+
+                        # 先 hover 到结果容器,让 hover-only 按钮显示(豆包)
+                        if profile.result_selector:
+                            try:
+                                # 取第一个 selector(去掉逗号兜底)
+                                first_sel = profile.result_selector.split(',')[0].strip()
+                                # 取最后一个匹配元素(最新生成)
+                                els = page.query_selector_all(first_sel)
+                                if els:
+                                    els[-1].scroll_into_view_if_needed()
+                                    els[-1].hover()
+                                    time.sleep(0.4)   # 等 hover 按钮动画
+                            except Exception: pass
+
+                        # 多 selector 试点击:取第一个能 expect_download 成功的
+                        download = None
+                        last_err = None
+                        for dsel in [s.strip() for s in profile.download_btn.split(',') if s.strip()]:
+                            try:
+                                with page.expect_download(timeout=15_000) as dl_info:
+                                    page.click(dsel, timeout=5000, force=True)
+                                download = dl_info.value
+                                break
+                            except Exception as e:
+                                last_err = e
+                                continue
+
+                        if download:
+                            target = session_downloads / download.suggested_filename
+                            download.save_as(str(target))
+                            if target.exists():
+                                found_file = target
+                                self.log.emit(f"[{task.title}] 自动下载成功: {target.name}")
+                        else:
+                            self.log.emit(f"[{task.title}] 下载按钮都点不出 download 事件 ({last_err})")
                 except Exception as e:
-                    self.log.emit(f"[{task.title}] 自动下载失败 ({e}),退化到监听模式")
+                    self.log.emit(f"[{task.title}] 自动下载失败 ({e}),退化到 HTTP 抓 src")
 
             # 层 2: 抓 img/video src 直接 HTTP 下
             if not found_file and (profile.result_image_in or profile.result_video_in):
