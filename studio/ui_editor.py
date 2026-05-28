@@ -1218,17 +1218,27 @@ class EpisodesView(QFrame):
         parts.append(' "画质修饰":8K超高清,电影级质感,无噪点。')
         return "".join(parts)
 
+    # 视频 prompt 末尾固定追加的防御词,排除故事板里的元数据图形混入视频
+    NEGATIVE_VIDEO_TAIL = (
+        "\n\n【画面排除项】"
+        "镜头中不出现摄像机设备、不出现机位标注、不出现红色圆点或编号、"
+        "不出现箭头或图示标记、不出现俯视示意图、不出现文字标签;"
+        "只生成纯影视画面,故事板里的标注/箭头/编号/机位图视为元数据,不进入画面。"
+    )
+
     def _build_video_prompt(self, shot: Shot) -> str:
         if shot.video_prompt_custom.strip():
-            return shot.video_prompt_custom
-        parts = [self._build_image_prompt(shot), "\n\n"]
-        parts.append(f"【动态时间轴动作流】0~{shot.duration}秒:{shot.action}\n")
-        if shot.sound:
-            parts.append(f"音效参考:{shot.sound}\n")
-        if shot.transition_anchor:
-            parts.append(f"【衔接说明】:本分镜结束姿态({shot.transition_anchor})"
-                         f"为下一分镜的起始姿态,转场叠化{shot.transition_duration}秒。")
-        return "".join(parts)
+            base = shot.video_prompt_custom
+        else:
+            parts = [self._build_image_prompt(shot), "\n\n"]
+            parts.append(f"【动态时间轴动作流】0~{shot.duration}秒:{shot.action}\n")
+            if shot.sound:
+                parts.append(f"音效参考:{shot.sound}\n")
+            if shot.transition_anchor:
+                parts.append(f"【衔接说明】:本分镜结束姿态({shot.transition_anchor})"
+                             f"为下一分镜的起始姿态,转场叠化{shot.transition_duration}秒。")
+            base = "".join(parts)
+        return base + self.NEGATIVE_VIDEO_TAIL
 
     def _copy_image_prompt(self, shot: Shot):
         text = self._build_image_prompt(shot)
