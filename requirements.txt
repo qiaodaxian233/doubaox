@@ -1,0 +1,8 @@
+# 必须 - GUI
+PySide6>=6.6.0
+
+# 必须 - 真实媒体解析(可选,缺失会自动 fallback 到 mock)
+# 从 GitHub 安装:
+#   git clone https://github.com/ihmily/doubao-nomark
+#   cd doubao-nomark && pip install -e .
+# doubao-nomark 自身的依赖(httpx 等)会一并装上
