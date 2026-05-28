@@ -26,7 +26,8 @@ class SiteProfile:
     video_entry: str = ""        # 点击进入视频生成
     # 操作元素
     input_box: str = ""          # prompt 输入框
-    upload_btn: str = ""         # 上传参考图按钮
+    upload_btn: str = ""         # 上传按钮(若为 dropdown menuitem 则不直接收文件,需先点 upload_trigger)
+    upload_trigger: str = ""     # 上传触发器(点了打开上传 dropdown,适用豆包等多层菜单)
     send_btn: str = ""           # 发送/生成按钮
     # 检测产出
     result_selector: str = ""    # 生成结果消息的容器
@@ -122,19 +123,46 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
         backend_id="doubao",
         home_url="https://www.doubao.com/chat",
         auth_cookies=["sessionid", "sid_guard", "sid_tt"],
-        input_box='textarea[data-testid="chat_input_input"], textarea',
+
+        # === 用户实测 DOM (2026 May 28) ===
+        # 输入框 — Semi Design UI 库,class 稳定
+        input_box=(
+            'textarea.semi-input-textarea, '
+            'textarea[placeholder="发消息..."], '
+            '.semi-input-textarea-wrapper textarea, '
+            'textarea[data-testid="chat_input_input"], '
+            'textarea'
+        ),
+        # 发送按钮 — 有稳定 ID
+        send_btn=(
+            '#flow-end-msg-send, '
+            '[data-dbx-name="button"][id*="send"], '
+            'button[data-testid="chat_input_send_button"]'
+        ),
+        # 上传按钮 — dropdown menuitem(点了弹原生 file chooser)
+        # Worker 会先试 input[type=file],失败走 chooser 模式
         upload_btn=(
+            '[role="menuitem"][data-slot="dropdown-menu-item"]:has-text("上传文件或图片"), '
+            '[role="menuitem"]:has-text("上传文件或图片"), '
             'input[type="file"][multiple], '
-            'input[type="file"]:not([accept]), '
-            'button[data-testid*="upload"], '
             'input[type="file"]'
         ),
-        send_btn='button[data-testid="chat_input_send_button"]',
+        # 上传触发器 — 首层"+"按钮(打开 dropdown 后才能看到 menuitem)
+        # TODO: 用户后续探查具体 selector 后覆盖
+        upload_trigger=(
+            '[aria-label*="附加"], [aria-label*="attach"], '
+            '[data-testid*="attach"], [data-testid*="upload"], '
+            'button[aria-haspopup="menu"]'
+        ),
+        # 视频生成入口 — dropdown menuitem(用户提到第一个是"视频")
+        video_entry='[role="menuitem"][data-slot="dropdown-menu-item"]:has-text("视频")',
+        # 生成结果
         result_selector='[data-testid*="message"][data-testid*="assistant"]',
         result_video_in='video',
-        result_image_in='img[src*="lf3"], img[src*="byteimg"]',
+        result_image_in='img[src*="lf3"], img[src*="byteimg"], img[src*="bytedance"]',
         quota_selector='[data-testid*="quota"], [class*="quota"]',
-        txt_use_bom=False,    # 字节跳动原生吃 UTF-8 无 BOM
+        # 字节跳动原生 UTF-8,无需 BOM
+        txt_use_bom=False,
         supports_image=True,
         supports_video=True,
     ),

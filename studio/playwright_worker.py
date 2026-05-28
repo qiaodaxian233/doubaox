@@ -212,6 +212,24 @@ class Worker(QObject):
                     q.mark_failed(task.id, "60 秒未完成登录")
                     return
 
+            # 4.5 视频任务:若 profile 配了 video_entry,先点(豆包要从 dropdown 选"视频")
+            from .models import TASK_TYPE_VIDEO as _TT_V
+            if task.task_type == _TT_V and profile.video_entry:
+                try:
+                    page = session.page()
+                    if page:
+                        # 先点 upload_trigger 打开菜单(若有),再点视频 menuitem
+                        if profile.upload_trigger:
+                            for tsel in [s.strip() for s in profile.upload_trigger.split(',') if s.strip()]:
+                                try:
+                                    page.click(tsel, timeout=2000); time.sleep(0.5); break
+                                except Exception: continue
+                        page.click(profile.video_entry, timeout=3000)
+                        self.log.emit(f"[{task.title}] 已切到视频生成模式")
+                        time.sleep(0.5)
+                except Exception as e:
+                    self.log.emit(f"[{task.title}] 点视频入口失败 ({e}),继续按当前模式生成")
+
             # 5. 填 prompt — 长 prompt 自动走 TXT 附件(用户反馈 GPT 镜像吃不下大段)
             threshold = getattr(profile, "txt_upload_threshold", 4000)
             prompt_len = len(task.prompt or "")
@@ -219,30 +237,40 @@ class Worker(QObject):
                            profile.upload_btn)
 
             if use_txt_mode:
-                # TXT 模式:写 .txt 文件 + 注入 file input + 输入框写短指令
+                # TXT 模式:写 .txt 文件 + 智能上传 + 输入框写短指令
                 self.log.emit(
                     f"[{task.title}] prompt 长度 {prompt_len} > {threshold},"
-                    f"改用 TXT 附件上传(避免 GPT 截断)"
+                    f"改用 TXT 附件上传(避免截断)"
                 )
-                # 文件名带 task id 便于追踪
                 fname = f"prompt_{task.id[:12]}.txt"
                 use_bom = getattr(profile, "txt_use_bom", True)
-                upload_ok = session.upload_txt(
-                    task.prompt, file_name=fname,
-                    upload_selector=profile.upload_btn,
-                    use_bom=use_bom,
-                )
+                # 先写文件(只写,不注入 — session.upload_txt 的写文件逻辑)
+                upload_root = session.downloads_dir / "_uploads"
+                upload_root.mkdir(parents=True, exist_ok=True)
+                txt_path = upload_root / fname
+                try:
+                    prefix = "\ufeff" if use_bom else ""
+                    txt_path.write_text(prefix + task.prompt, encoding="utf-8")
+                except Exception as e:
+                    self.log.emit(f"[{task.title}] 写 .txt 失败: {e}")
+                    txt_path = None
+
+                upload_ok = False
+                if txt_path and txt_path.exists():
+                    # 用 _smart_upload(支持 GPT input 模式 + 豆包 chooser 模式)
+                    upload_ok = self._smart_upload(session, profile, [txt_path])
+
                 if upload_ok:
                     bom_tag = "+BOM" if use_bom else "-BOM"
                     self.log.emit(f"[{task.title}] TXT 附件上传完成 ({bom_tag})")
-                    # 等附件预览出现(确认 GPT 收到了)
+                    # 等附件预览出现
                     try:
                         page = session.page()
                         if page:
                             page.wait_for_selector(
                                 '[data-testid*="file-preview"], [data-testid*="attachment"], '
                                 '[class*="attachment"], [class*="filePreview"], '
-                                '[class*="upload-preview"]',
+                                '[class*="upload-preview"], [class*="FilePreview"]',
                                 timeout=8000
                             )
                     except Exception: pass
@@ -265,10 +293,10 @@ class Worker(QObject):
                 else:
                     self.log.emit(f"[{task.title}] 已自动填入 prompt ({prompt_len} 字)")
 
-            # 6. 上传参考图(若有)— 用 set_input_files 直接注入,避开 file chooser 浮窗
+            # 6. 上传参考图(若有)— 用 _smart_upload(兼容 GPT 直注入 + 豆包 chooser)
             if task.reference_images and profile.upload_btn:
                 try:
-                    ok = session.set_input_files(profile.upload_btn, task.reference_images)
+                    ok = self._smart_upload(session, profile, task.reference_images)
                     if ok:
                         self.log.emit(f"[{task.title}] 已上传 {len(task.reference_images)} 张参考图")
                     else:
@@ -401,6 +429,70 @@ class Worker(QObject):
             q.mark_failed(task.id, str(e))
             self.log.emit(f"[{task.title}] 失败: {e}")
             self.task_failed.emit(task.id, str(e))
+
+    def _smart_upload(self, session, profile, files: list) -> bool:
+        """智能文件上传 — 兼容两种站点设计:
+
+        模式 A (GPT 镜像):页面已有 hidden input[type=file],直接 set_input_files 注入。
+        模式 B (豆包):upload_btn 是 dropdown menuitem,点了才弹原生 file chooser。
+                     需先点 upload_trigger 打开菜单,再点 menuitem,
+                     用 page.expect_file_chooser 抓 chooser 后 set_files。
+
+        策略:
+        1. 先扫 upload_btn selectors,找其中 input[type=file] 部分,试 set_input_files
+        2. 失败 → 走 chooser 模式:expect_file_chooser + click trigger + click menuitem
+        3. 都失败返回 False(worker 退化到打印 "请手动上传")
+        """
+        page = session.page()
+        if not page or not profile.upload_btn: return False
+        paths = [str(f) for f in (files if isinstance(files, list) else [files])]
+
+        # 拆分多 selector(逗号分隔)
+        all_sels = [s.strip() for s in profile.upload_btn.split(',') if s.strip()]
+        input_sels = [s for s in all_sels if 'input' in s.lower() and 'file' in s.lower()]
+        click_sels = [s for s in all_sels if s not in input_sels]
+
+        # ─── 模式 A: 直接注入 input[type=file] ───
+        for sel in input_sels:
+            try:
+                if page.query_selector(sel):
+                    page.set_input_files(sel, paths, timeout=5000)
+                    self.log.emit(f"  ↳ 上传模式 A (set_input_files): {sel[:50]}")
+                    return True
+            except Exception:
+                continue
+
+        # ─── 模式 B: click 触发 + 抓 file chooser ───
+        if click_sels or profile.upload_trigger:
+            try:
+                with page.expect_file_chooser(timeout=8000) as fc_info:
+                    # 先点首层触发器(可选 — 豆包的"+"按钮)
+                    if profile.upload_trigger:
+                        for tsel in [s.strip() for s in profile.upload_trigger.split(',') if s.strip()]:
+                            try:
+                                page.click(tsel, timeout=2000)
+                                time.sleep(0.5)   # 等 dropdown 动画
+                                break
+                            except Exception: continue
+                    # 再点 menuitem
+                    clicked = False
+                    for csel in click_sels:
+                        try:
+                            page.click(csel, timeout=2000)
+                            clicked = True
+                            break
+                        except Exception: continue
+                    if not clicked and not profile.upload_trigger:
+                        return False
+                fc = fc_info.value
+                fc.set_files(paths)
+                self.log.emit(f"  ↳ 上传模式 B (file_chooser): {len(paths)} 个文件")
+                return True
+            except Exception as e:
+                self.log.emit(f"  ↳ chooser 模式失败: {e}")
+                return False
+
+        return False
 
     def _download_via_http(self, src_url: str, save_dir: Path) -> Optional[Path]:
         """直接 HTTP GET 图片/视频 src(blob: URL 用 Playwright 的 fetch)。"""
