@@ -20,7 +20,7 @@ from dataclasses import asdict
 from typing import List, Optional
 from .models import (
     Project, Character, Scene, Prop, Episode, Account, PromptTemplate,
-    GenerationBackend, BACKEND_IMAGE, BACKEND_VIDEO,
+    GenerationBackend, BACKEND_IMAGE, BACKEND_VIDEO, CanvasItem,
     dict_to_dataclass,
 )
 
@@ -83,6 +83,13 @@ def load_scenes(pid):     return _load_list(pid, "scenes", Scene)
 def save_scenes(pid, items): _save_list(pid, "scenes", items)
 def load_props(pid):      return _load_list(pid, "props", Prop)
 def save_props(pid, items): _save_list(pid, "props", items)
+
+# ---- CanvasItem (画布自由节点) ----
+def load_canvas_items(pid: str) -> List[CanvasItem]:
+    return _load_list(pid, "canvas_items", CanvasItem)
+
+def save_canvas_items(pid: str, items: List[CanvasItem]):
+    _save_list(pid, "canvas_items", items)
 
 
 # ---- Episodes (每集一个文件,含 shots + segments) ----

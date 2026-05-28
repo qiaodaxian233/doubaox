@@ -304,6 +304,40 @@ class Account:
             self.video_quota_used = 0
 
 
+# ---- 画布自由对象(M6:文本节点 / 生成器节点 / 独立生成结果)----
+CANVAS_TEXT      = "text"
+CANVAS_GENERATOR = "generator"
+CANVAS_IMAGE     = "image"
+CANVAS_VIDEO     = "video"
+
+
+@dataclass
+class CanvasItem:
+    """画布上的非资产节点。区别于 AssetNode 是资产库的可视化,
+    CanvasItem 是画布上独立创建的对象(便利贴/直接生成的图)。"""
+    id: str = field(default_factory=lambda: _gid("canv"))
+    project_id: str = ""
+    kind: str = CANVAS_TEXT
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 240.0
+    height: float = 130.0
+
+    # 文本节点
+    text: str = ""
+
+    # 生成器节点状态机: pending / queued / running / done / failed
+    status: str = "pending"
+    prompt: str = ""
+    backend_id: str = "gpt-mirror"
+    task_type: str = "image"
+    reference_node_ids: List[str] = field(default_factory=list)
+    task_id: str = ""
+    result_file: str = ""
+    title: str = ""
+    error: str = ""
+
+
 @dataclass
 class PromptTemplate:
     """提示词模板"""

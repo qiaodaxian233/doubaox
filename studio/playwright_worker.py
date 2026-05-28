@@ -36,13 +36,14 @@ from .playwright_session import get_pool, HAS_PLAYWRIGHT
 class Worker(QObject):
     """单线程 worker。多账号并发?暂时不,M2 先稳。"""
     log = Signal(str)
+    task_done = Signal(str)         # task_id (Qt 信号跨线程自动 queue 到主线程,UI 安全)
+    task_failed = Signal(str, str)  # task_id, error
 
     def __init__(self):
         super().__init__()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self.profiles = load_profiles(ST.APP_DIR / "site_profiles.json")
-        self._task_done_callbacks: List[Callable] = []
 
     def start(self):
         if self._running: return
@@ -167,14 +168,12 @@ class Worker(QObject):
 
             # 11. 回写到目标对象(角色参考图、分镜参考图等)
             self._writeback(task, rel)
-
-            for cb in self._task_done_callbacks:
-                try: cb(task)
-                except Exception: pass
+            self.task_done.emit(task.id)
 
         except Exception as e:
             q.mark_failed(task.id, str(e))
             self.log.emit(f"[{task.title}] 失败: {e}")
+            self.task_failed.emit(task.id, str(e))
 
     def _guess_os_downloads(self) -> Path:
         from .downloads_watcher import default_downloads_dir
@@ -260,6 +259,15 @@ class Worker(QObject):
                             seg.storyboard_image = asset_rel
                         ST.save_episode(pid, ep)
                         return
+        elif task.target_kind == "canvas_item":
+            items = ST.load_canvas_items(pid)
+            for it in items:
+                if it.id == task.target_id:
+                    it.status = "done"
+                    it.result_file = asset_rel
+                    it.kind = "image" if task.task_type != "video" else "video"
+                    ST.save_canvas_items(pid, items)
+                    return
 
     def _copy_to_clipboard(self, text: str):
         try:
@@ -267,9 +275,6 @@ class Worker(QObject):
             QApplication.clipboard().setText(text)
         except Exception:
             pass
-
-    def on_task_done(self, callback: Callable):
-        self._task_done_callbacks.append(callback)
 
 
 # 单例

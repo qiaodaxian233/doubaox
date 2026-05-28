@@ -1,19 +1,13 @@
 """
 InfiniteCanvas — 节点式工作台。
 
-把项目里的角色 / 场景 / 道具 / 分镜全部抽成节点扔到 QGraphicsScene 上,
-导演把它们摆成自己的故事板布局。节点间(暂时手动连)的引用关系可视化。
-
-技术:
-- QGraphicsView + QGraphicsScene (无限尺寸,内置缩放平移)
-- 节点是 QGraphicsItemGroup 子类
-- 滚轮缩放,中键/空格 + 拖拽平移,左键拖节点
-- 节点位置持久化 → ~/.doubao-studio/projects/<pid>/canvas.json
+M5: 资产节点(角色/场景/道具/分镜)+ 自动布局 + 位置持久化
+M6: 文本节点 + 生成器节点(画布内直接生图)+ 节点间引用连线
 """
 from __future__ import annotations
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
-import json, math
+import json, math, time
 
 from PySide6.QtCore import Qt, QPointF, QRectF, QSize, Signal, QTimer
 from PySide6.QtGui import (
@@ -25,16 +19,21 @@ from PySide6.QtWidgets import (
     QGraphicsScene, QGraphicsItem, QGraphicsItemGroup, QGraphicsRectItem,
     QGraphicsPixmapItem, QGraphicsTextItem, QGraphicsPathItem,
     QMenu, QMessageBox, QFileDialog, QGraphicsLineItem,
-    QSizePolicy, QApplication,
+    QSizePolicy, QApplication, QInputDialog,
+    QDialog, QDialogButtonBox, QLineEdit, QPlainTextEdit, QComboBox,
+    QFormLayout,
 )
 
 from .theme import C
 from .widgets import Hline
 from . import storage as ST
-from .models import Character, Scene, Prop, Episode, Shot
+from .models import (
+    Character, Scene, Prop, Episode, Shot, CanvasItem, GenerationTask,
+    CANVAS_TEXT, CANVAS_GENERATOR, CANVAS_IMAGE, CANVAS_VIDEO,
+)
 
 
-# 节点尺寸
+# ==== 节点尺寸常量 ====
 NODE_W = 200
 NODE_H = 260
 NODE_PADDING = 12
@@ -42,39 +41,86 @@ NODE_HEADER_H = 30
 THUMB_H = 130
 RADIUS = 10
 
+# 节点类型 → 上色
+KIND_COLORS = {
+    "character": "#7c3aed",
+    "scene":     "#0d9488",
+    "prop":      "#b45309",
+    "shot":      "#dc5a3a",
+    "segment":   "#1e3a8a",
+    "text":      "#fbbf24",
+    "generator": "#0369a1",
+    "image":     "#15803d",
+    "video":     "#be185d",
+}
+
+
+def _rounded_path(x: float, y: float, w: float, h: float,
+                  r: float, only_top: bool = False) -> QPainterPath:
+    """工具函数 — 圆角矩形 path。"""
+    path = QPainterPath()
+    if only_top:
+        path.moveTo(x, y + h)
+        path.lineTo(x, y + r)
+        path.quadTo(x, y, x + r, y)
+        path.lineTo(x + w - r, y)
+        path.quadTo(x + w, y, x + w, y + r)
+        path.lineTo(x + w, y + h)
+        path.closeSubpath()
+    else:
+        path.addRoundedRect(x, y, w, h, r, r)
+    return path
+
 
 # =========================================================================
-class AssetNode(QGraphicsItemGroup):
-    """单个资产节点(角色/场景/道具/分镜)。"""
+class _NodeBase(QGraphicsItemGroup):
+    """所有节点的基类 — 共享拖动 / 选中描边 / 位置变化通知。"""
+
+    def __init__(self):
+        super().__init__()
+        self.setFlag(QGraphicsItem.ItemIsMovable)
+        self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
+        self.setCursor(QCursor(Qt.OpenHandCursor))
+        self.connections: List["ConnectionLine"] = []   # 引用本节点的所有连线
+        self._outline = None
+
+    def add_connection(self, line: "ConnectionLine"):
+        self.connections.append(line)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedHasChanged and self._outline:
+            self._outline.setVisible(bool(value))
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            for line in self.connections:
+                line.update_path()
+        return super().itemChange(change, value)
+
+
+# =========================================================================
+class AssetNode(_NodeBase):
+    """显示项目里的角色 / 场景 / 道具 / 分镜。"""
 
     def __init__(self, node_id: str, kind: str, title: str, subtitle: str,
                  image_path: Optional[Path], color: str = "#1e3a8a"):
         super().__init__()
         self.node_id = node_id
-        self.kind = kind       # character / scene / prop / shot / segment / video
+        self.kind = kind
         self.title = title
         self.subtitle = subtitle
 
-        self.setFlag(QGraphicsItem.ItemIsMovable)
-        self.setFlag(QGraphicsItem.ItemIsSelectable)
-        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
-        self.setCursor(QCursor(Qt.OpenHandCursor))
-
-        # 背景卡
-        self.bg = QGraphicsPathItem(self._rounded_rect_path(0, 0, NODE_W, NODE_H, RADIUS))
-        self.bg.setBrush(QBrush(QColor("#ffffff")))
-        self.bg.setPen(QPen(QColor(C["border_soft"]), 1))
-        self.addToGroup(self.bg)
+        # 背景
+        bg = QGraphicsPathItem(_rounded_path(0, 0, NODE_W, NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#ffffff")))
+        bg.setPen(QPen(QColor(C["border_soft"]), 1))
+        self.addToGroup(bg)
 
         # 顶部色条
-        self.header = QGraphicsPathItem(
-            self._rounded_rect_path(0, 0, NODE_W, NODE_HEADER_H, RADIUS, only_top=True)
-        )
-        self.header.setBrush(QBrush(QColor(color)))
-        self.header.setPen(QPen(Qt.NoPen))
-        self.addToGroup(self.header)
+        header = QGraphicsPathItem(_rounded_path(0, 0, NODE_W, NODE_HEADER_H, RADIUS, only_top=True))
+        header.setBrush(QBrush(QColor(color)))
+        header.setPen(QPen(Qt.NoPen))
+        self.addToGroup(header)
 
-        # kind icon (左上)
         icon_map = {
             "character": "👤", "scene": "🏞", "prop": "📿",
             "shot": "🎬", "segment": "🎞", "video": "🎥",
@@ -85,51 +131,40 @@ class AssetNode(QGraphicsItemGroup):
         icon.setPos(8, 4)
         self.addToGroup(icon)
 
-        # title
-        self.title_item = QGraphicsTextItem(title)
-        self.title_item.setDefaultTextColor(QColor("white"))
+        title_item = QGraphicsTextItem(title)
+        title_item.setDefaultTextColor(QColor("white"))
         f = QFont("Inter Tight"); f.setPointSize(10); f.setWeight(QFont.DemiBold)
-        self.title_item.setFont(f)
-        self.title_item.setPos(34, 6)
-        self.title_item.setTextWidth(NODE_W - 44)
-        self.addToGroup(self.title_item)
+        title_item.setFont(f)
+        title_item.setPos(34, 6)
+        title_item.setTextWidth(NODE_W - 44)
+        self.addToGroup(title_item)
 
-        # thumbnail
+        # 缩略图
         thumb_y = NODE_HEADER_H + NODE_PADDING
+        thumb_w = NODE_W - 2 * NODE_PADDING
         if image_path and Path(image_path).exists():
             pm = QPixmap(str(image_path))
             if not pm.isNull():
-                pm = pm.scaled(NODE_W - 2 * NODE_PADDING, THUMB_H,
-                               Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                self.thumb = QGraphicsPixmapItem(pm)
-                # 居中并裁剪显示区域(用 path 蒙版)
-                clip_w = NODE_W - 2 * NODE_PADDING
-                clip_h = THUMB_H
-                self.thumb.setPos(NODE_PADDING - max(0, (pm.width() - clip_w)) // 2,
-                                   thumb_y - max(0, (pm.height() - clip_h)) // 2)
-                # 用 clip 做圆角
-                clip = QGraphicsPathItem(self._rounded_rect_path(
-                    NODE_PADDING, thumb_y, clip_w, clip_h, 6))
-                clip.setBrush(QBrush(QColor("#ffffff")))
-                clip.setPen(QPen(QColor(C["border_soft"]), 1))
-                self.addToGroup(clip)
-                self.addToGroup(self.thumb)
+                pm = pm.scaled(thumb_w, THUMB_H,
+                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                thumb = QGraphicsPixmapItem(pm)
+                thumb.setPos(NODE_PADDING + max(0, (thumb_w - pm.width()) // 2),
+                             thumb_y + max(0, (THUMB_H - pm.height()) // 2))
+                self.addToGroup(thumb)
         else:
-            # 占位
-            placeholder = QGraphicsPathItem(self._rounded_rect_path(
-                NODE_PADDING, thumb_y, NODE_W - 2 * NODE_PADDING, THUMB_H, 6))
-            placeholder.setBrush(QBrush(QColor(C["surface_alt"])))
-            placeholder.setPen(QPen(QColor(C["border_soft"]), 1))
-            self.addToGroup(placeholder)
+            ph = QGraphicsPathItem(_rounded_path(
+                NODE_PADDING, thumb_y, thumb_w, THUMB_H, 6))
+            ph.setBrush(QBrush(QColor(C["surface_alt"])))
+            ph.setPen(QPen(QColor(C["border_soft"]), 1))
+            self.addToGroup(ph)
             ph_text = QGraphicsTextItem("(无图)")
             ph_text.setDefaultTextColor(QColor(C["muted"]))
             ph_text.setFont(QFont("Inter", 9))
             tr = ph_text.boundingRect()
             ph_text.setPos(NODE_W / 2 - tr.width() / 2,
-                           thumb_y + THUMB_H / 2 - tr.height() / 2)
+                          thumb_y + THUMB_H / 2 - tr.height() / 2)
             self.addToGroup(ph_text)
 
-        # subtitle
         sub_y = thumb_y + THUMB_H + 10
         sub = QGraphicsTextItem(subtitle)
         sub.setDefaultTextColor(QColor(C["ink_soft"]))
@@ -139,44 +174,345 @@ class AssetNode(QGraphicsItemGroup):
         self.addToGroup(sub)
 
         # 选中描边
-        self._selected_outline = QGraphicsPathItem(
-            self._rounded_rect_path(-2, -2, NODE_W + 4, NODE_H + 4, RADIUS + 2))
-        self._selected_outline.setBrush(QBrush(Qt.NoBrush))
-        self._selected_outline.setPen(QPen(QColor(C["accent"]), 2))
-        self._selected_outline.setVisible(False)
-        self.addToGroup(self._selected_outline)
+        self._outline = QGraphicsPathItem(_rounded_path(-2, -2, NODE_W + 4, NODE_H + 4, RADIUS + 2))
+        self._outline.setBrush(QBrush(Qt.NoBrush))
+        self._outline.setPen(QPen(QColor(C["accent"]), 2))
+        self._outline.setVisible(False)
+        self.addToGroup(self._outline)
 
-    def boundingRect(self) -> QRectF:
-        return QRectF(-2, -2, NODE_W + 4, NODE_H + 4)
+
+# =========================================================================
+class TextNode(_NodeBase):
+    """便利贴样式的文本节点。"""
+
+    NODE_W = 240
+    NODE_H = 130
+
+    def __init__(self, canvas_item: CanvasItem):
+        super().__init__()
+        self.canvas_item = canvas_item
+        self.node_id = canvas_item.id
+        self.kind = "text"
+
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, 8))
+        bg.setBrush(QBrush(QColor("#fef3c7")))
+        bg.setPen(QPen(QColor("#fbbf24"), 1))
+        self.addToGroup(bg)
+
+        ic = QGraphicsTextItem("📝")
+        ic.setFont(QFont("Inter", 12))
+        ic.setPos(8, 4)
+        self.addToGroup(ic)
+
+        self.text_item = QGraphicsTextItem()
+        self.text_item.setPlainText(canvas_item.text or "(双击编辑文本)")
+        self.text_item.setDefaultTextColor(QColor("#0a0a0a"))
+        f = QFont("Inter Tight"); f.setPointSize(10)
+        self.text_item.setFont(f)
+        self.text_item.setTextWidth(self.NODE_W - 20)
+        self.text_item.setPos(10, 28)
+        self.addToGroup(self.text_item)
+
+        self._outline = QGraphicsPathItem(_rounded_path(-2, -2, self.NODE_W + 4, self.NODE_H + 4, 10))
+        self._outline.setBrush(QBrush(Qt.NoBrush))
+        self._outline.setPen(QPen(QColor(C["accent"]), 2))
+        self._outline.setVisible(False)
+        self.addToGroup(self._outline)
+
+    def set_text(self, text: str):
+        self.text_item.setPlainText(text or "(双击编辑文本)")
+        self.canvas_item.text = text
 
     def itemChange(self, change, value):
-        if change == QGraphicsItem.ItemSelectedHasChanged:
-            self._selected_outline.setVisible(bool(value))
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            self.canvas_item.x = self.scenePos().x()
+            self.canvas_item.y = self.scenePos().y()
         return super().itemChange(change, value)
 
-    @staticmethod
-    def _rounded_rect_path(x: float, y: float, w: float, h: float,
-                           r: float, only_top: bool = False) -> QPainterPath:
-        path = QPainterPath()
-        if only_top:
-            path.moveTo(x, y + h)
-            path.lineTo(x, y + r)
-            path.quadTo(x, y, x + r, y)
-            path.lineTo(x + w - r, y)
-            path.quadTo(x + w, y, x + w, y + r)
-            path.lineTo(x + w, y + h)
-            path.closeSubpath()
+
+# =========================================================================
+class GeneratorNode(_NodeBase):
+    """生成器节点。
+    状态机:pending(空白)→ queued(蓝)→ running(蓝+动)→ done(绿+图)| failed(红)
+    """
+
+    NODE_W = 220
+    NODE_H = 240
+
+    def __init__(self, canvas_item: CanvasItem):
+        super().__init__()
+        self.canvas_item = canvas_item
+        self.node_id = canvas_item.id
+        self.kind = "generator"
+        self._render()
+
+    def _clear_visuals(self):
+        for it in list(self.childItems()):
+            self.removeFromGroup(it)
+            sc = it.scene()
+            if sc: sc.removeItem(it)
+
+    def _render(self):
+        self._clear_visuals()
+        status = self.canvas_item.status
+
+        if status == "done" and self.canvas_item.result_file:
+            self._paint_done()
+        elif status == "failed":
+            self._paint_failed()
+        elif status in ("queued", "running"):
+            self._paint_running()
         else:
-            path.addRoundedRect(x, y, w, h, r, r)
-        return path
+            self._paint_empty()
+
+        self._outline = QGraphicsPathItem(_rounded_path(-2, -2, self.NODE_W + 4, self.NODE_H + 4, RADIUS + 2))
+        self._outline.setBrush(QBrush(Qt.NoBrush))
+        self._outline.setPen(QPen(QColor(C["accent"]), 2))
+        self._outline.setVisible(self.isSelected())
+        self.addToGroup(self._outline)
+
+    def _paint_empty(self):
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#eff6ff")))
+        bg.setPen(QPen(QColor(C["info"]), 2, Qt.DashLine))
+        self.addToGroup(bg)
+
+        plus = QGraphicsTextItem("+")
+        plus.setDefaultTextColor(QColor(C["info"]))
+        f = QFont("Inter Tight"); f.setPointSize(48); f.setWeight(QFont.Light)
+        plus.setFont(f)
+        tr = plus.boundingRect()
+        plus.setPos(self.NODE_W / 2 - tr.width() / 2,
+                    self.NODE_H / 2 - tr.height() / 2 - 18)
+        self.addToGroup(plus)
+
+        hint = QGraphicsTextItem("双击设置 prompt")
+        hint.setDefaultTextColor(QColor(C["muted"]))
+        hint.setFont(QFont("Inter", 10))
+        tr = hint.boundingRect()
+        hint.setPos(self.NODE_W / 2 - tr.width() / 2, self.NODE_H - 36)
+        self.addToGroup(hint)
+
+    def _paint_running(self):
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#dbeafe")))
+        bg.setPen(QPen(QColor(C["info"]), 2))
+        self.addToGroup(bg)
+
+        sp = QGraphicsTextItem("⏳" if self.canvas_item.status == "queued" else "⚡")
+        sp.setFont(QFont("Inter", 32))
+        tr = sp.boundingRect()
+        sp.setPos(self.NODE_W / 2 - tr.width() / 2, 40)
+        self.addToGroup(sp)
+
+        st = QGraphicsTextItem("排队中..." if self.canvas_item.status == "queued" else "生成中...")
+        st.setDefaultTextColor(QColor(C["info"]))
+        f = QFont("Inter Tight"); f.setPointSize(11); f.setWeight(QFont.DemiBold)
+        st.setFont(f)
+        tr = st.boundingRect()
+        st.setPos(self.NODE_W / 2 - tr.width() / 2, 110)
+        self.addToGroup(st)
+
+        prev = (self.canvas_item.prompt or "")[:80]
+        if len(self.canvas_item.prompt) > 80: prev += "..."
+        p = QGraphicsTextItem(prev)
+        p.setDefaultTextColor(QColor(C["ink_soft"]))
+        p.setFont(QFont("Inter", 9))
+        p.setTextWidth(self.NODE_W - 24)
+        p.setPos(12, 145)
+        self.addToGroup(p)
+
+    def _paint_done(self):
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#ffffff")))
+        bg.setPen(QPen(QColor(C["online"]), 1))
+        self.addToGroup(bg)
+
+        header = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, NODE_HEADER_H, RADIUS, only_top=True))
+        header.setBrush(QBrush(QColor(C["online"])))
+        header.setPen(QPen(Qt.NoPen))
+        self.addToGroup(header)
+
+        ic = QGraphicsTextItem("✅" if self.canvas_item.task_type == "image" else "🎬")
+        ic.setDefaultTextColor(QColor("white"))
+        ic.setFont(QFont("Inter", 12))
+        ic.setPos(8, 4)
+        self.addToGroup(ic)
+
+        title = QGraphicsTextItem(self.canvas_item.title or "已生成")
+        title.setDefaultTextColor(QColor("white"))
+        f = QFont("Inter Tight"); f.setPointSize(10); f.setWeight(QFont.DemiBold)
+        title.setFont(f)
+        title.setPos(34, 6)
+        title.setTextWidth(self.NODE_W - 44)
+        self.addToGroup(title)
+
+        img_path = ST.asset_full_path(self.canvas_item.project_id, self.canvas_item.result_file)
+        if img_path.exists():
+            pm = QPixmap(str(img_path))
+            if not pm.isNull():
+                tw = self.NODE_W - 24
+                th = self.NODE_H - NODE_HEADER_H - 16
+                pm = pm.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                thumb = QGraphicsPixmapItem(pm)
+                thumb.setPos(12 + max(0, (tw - pm.width()) // 2),
+                            NODE_HEADER_H + 8 + max(0, (th - pm.height()) // 2))
+                self.addToGroup(thumb)
+                return
+        ph = QGraphicsTextItem("(图加载失败)")
+        ph.setDefaultTextColor(QColor(C["muted"]))
+        ph.setPos(12, NODE_HEADER_H + 30)
+        self.addToGroup(ph)
+
+    def _paint_failed(self):
+        bg = QGraphicsPathItem(_rounded_path(0, 0, self.NODE_W, self.NODE_H, RADIUS))
+        bg.setBrush(QBrush(QColor("#fef2f2")))
+        bg.setPen(QPen(QColor(C["danger"]), 2))
+        self.addToGroup(bg)
+        x = QGraphicsTextItem("❌")
+        x.setFont(QFont("Inter", 32))
+        tr = x.boundingRect()
+        x.setPos(self.NODE_W / 2 - tr.width() / 2, 40)
+        self.addToGroup(x)
+        msg = QGraphicsTextItem(self.canvas_item.error or "失败")
+        msg.setDefaultTextColor(QColor(C["danger"]))
+        msg.setFont(QFont("Inter", 10))
+        msg.setTextWidth(self.NODE_W - 24)
+        msg.setPos(12, 100)
+        self.addToGroup(msg)
+
+    def update_status(self, status: str, result_file: str = "", error: str = ""):
+        self.canvas_item.status = status
+        if result_file: self.canvas_item.result_file = result_file
+        if error: self.canvas_item.error = error
+        self._render()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionHasChanged:
+            self.canvas_item.x = self.scenePos().x()
+            self.canvas_item.y = self.scenePos().y()
+        return super().itemChange(change, value)
+
+
+# =========================================================================
+class ConnectionLine(QGraphicsPathItem):
+    """节点间引用连线 — 跟随源/终点节点位置自动重画。"""
+
+    def __init__(self, src_node, dst_node, kind: str = "ref"):
+        super().__init__()
+        self.src = src_node
+        self.dst = dst_node
+        self.kind = kind
+        pen = QPen(QColor("#c4c4c4"), 1.2)
+        self.setPen(pen)
+        self.setZValue(-10)
+        self.update_path()
+
+    def update_path(self):
+        if not self.src or not self.dst: return
+        try:
+            src_rect = self.src.sceneBoundingRect()
+            dst_rect = self.dst.sceneBoundingRect()
+        except RuntimeError:
+            return
+        sx = src_rect.right()
+        sy = src_rect.center().y()
+        ex = dst_rect.left()
+        ey = dst_rect.center().y()
+        path = QPainterPath()
+        path.moveTo(sx, sy)
+        offset = max(40, abs(ex - sx) / 2)
+        path.cubicTo(sx + offset, sy, ex - offset, ey, ex, ey)
+        self.setPath(path)
+
+
+# =========================================================================
+class GeneratorDialog(QDialog):
+    """新建/编辑生成器节点的对话框。"""
+
+    def __init__(self, parent=None, canvas_item: CanvasItem = None):
+        super().__init__(parent)
+        self.canvas_item = canvas_item or CanvasItem(kind=CANVAS_GENERATOR)
+        self.setWindowTitle("生成器节点 — 画布内直接生图")
+        self.setMinimumWidth(560)
+
+        l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 18); l.setSpacing(12)
+        t = QLabel("画布内生成图 / 视频")
+        t.setStyleSheet("font-size: 16px; font-weight: 500;")
+        l.addWidget(t)
+
+        f = QFormLayout(); f.setSpacing(10)
+
+        self.title_input = QLineEdit()
+        self.title_input.setText(self.canvas_item.title or "")
+        self.title_input.setPlaceholderText("可选,显示在节点头部")
+        f.addRow("标题", self.title_input)
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("生成图片 (image)", "image")
+        self.type_combo.addItem("生成视频 (video)", "video")
+        # 默认 image
+        if self.canvas_item.task_type == "video":
+            self.type_combo.setCurrentIndex(1)
+        f.addRow("类型", self.type_combo)
+
+        self.backend_combo = QComboBox()
+        backends = ST.load_backends()
+        for b in backends:
+            if not b.enabled: continue
+            self.backend_combo.addItem(f"{b.icon} {b.name}", b.id)
+        # 选中现有
+        for i in range(self.backend_combo.count()):
+            if self.backend_combo.itemData(i) == self.canvas_item.backend_id:
+                self.backend_combo.setCurrentIndex(i); break
+        # 联动:类型改变时,backend 默认调整
+        self.type_combo.currentIndexChanged.connect(self._on_type_change)
+        f.addRow("Backend", self.backend_combo)
+
+        l.addLayout(f)
+
+        l.addWidget(QLabel("Prompt:"))
+        self.prompt_box = QPlainTextEdit()
+        self.prompt_box.setPlainText(self.canvas_item.prompt or "")
+        self.prompt_box.setPlaceholderText(
+            "示例:陆渊在矿坑里发现紫金符文,光线从地面渗出,8K 电影感。"
+        )
+        self.prompt_box.setMinimumHeight(180)
+        l.addWidget(self.prompt_box)
+
+        b = QDialogButtonBox()
+        b.addButton("取消", QDialogButtonBox.RejectRole)
+        ok = b.addButton("发起生成", QDialogButtonBox.AcceptRole); ok.setObjectName("Primary")
+        b.accepted.connect(self.accept); b.rejected.connect(self.reject)
+        l.addWidget(b)
+
+    def _on_type_change(self):
+        # 类型切换时,如果当前 backend 不匹配,自动切到合适的
+        kind = self.type_combo.currentData()
+        if kind == "video":
+            for i in range(self.backend_combo.count()):
+                if self.backend_combo.itemData(i) == "doubao":
+                    self.backend_combo.setCurrentIndex(i); return
+        else:
+            for i in range(self.backend_combo.count()):
+                if self.backend_combo.itemData(i) == "gpt-mirror":
+                    self.backend_combo.setCurrentIndex(i); return
+
+    def commit(self) -> CanvasItem:
+        self.canvas_item.title = self.title_input.text().strip()
+        self.canvas_item.task_type = self.type_combo.currentData()
+        self.canvas_item.backend_id = self.backend_combo.currentData()
+        self.canvas_item.prompt = self.prompt_box.toPlainText().strip()
+        return self.canvas_item
 
 
 # =========================================================================
 class CanvasView(QGraphicsView):
-    """无限画布视图。"""
+    """画布视图本体。"""
 
-    node_double_clicked = Signal(str, str)   # (kind, node_id)
-    node_action         = Signal(str, str, str)   # (action_name, kind, node_id)
+    node_double_clicked = Signal(str, str)
+    node_action         = Signal(str, str, str)
+    blank_action        = Signal(str, QPointF)   # action, scene pos
     log                 = Signal(str)
 
     def __init__(self):
@@ -190,55 +526,40 @@ class CanvasView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # 巨大 scene(虚拟无限)
         self.scene_ = QGraphicsScene(-5000, -5000, 10000, 10000)
         self.setScene(self.scene_)
 
         self._panning = False
         self._pan_start: QPointF = QPointF()
         self._zoom = 1.0
-        self._nodes_by_id: Dict[str, AssetNode] = {}
-
-        # 绘制网格背景
-        self._draw_grid()
-
-    def _draw_grid(self):
-        """背景网格(40px 一格淡线,200px 一格深线)"""
-        # 用 background scene draw 而不是 item — 性能更好
-        pass  # 实现在 drawBackground 里
+        self._nodes_by_id: Dict[str, _NodeBase] = {}
+        self._connections: List[ConnectionLine] = []
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
-        # 细网格
         pen_light = QPen(QColor("#eeeeee"), 0)
         painter.setPen(pen_light)
         step = 40
         left = int(rect.left()) - (int(rect.left()) % step)
-        top = int(rect.top()) - (int(rect.top()) % step)
+        top  = int(rect.top())  - (int(rect.top())  % step)
         x = left
         while x < rect.right():
-            painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom()))
-            x += step
+            painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom())); x += step
         y = top
         while y < rect.bottom():
-            painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
-            y += step
-        # 粗网格
+            painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y)); y += step
         pen_strong = QPen(QColor("#e0e0e0"), 0)
         painter.setPen(pen_strong)
         step_b = 200
         left_b = int(rect.left()) - (int(rect.left()) % step_b)
-        top_b = int(rect.top()) - (int(rect.top()) % step_b)
+        top_b  = int(rect.top())  - (int(rect.top())  % step_b)
         x = left_b
         while x < rect.right():
-            painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom()))
-            x += step_b
+            painter.drawLine(int(x), int(rect.top()), int(x), int(rect.bottom())); x += step_b
         y = top_b
         while y < rect.bottom():
-            painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
-            y += step_b
+            painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y)); y += step_b
 
-    # ---- 平移:中键拖 / 空格拖 ----
     def mousePressEvent(self, e):
         if e.button() == Qt.MiddleButton or \
            (e.button() == Qt.LeftButton and (e.modifiers() & Qt.ControlModifier)):
@@ -266,47 +587,73 @@ class CanvasView(QGraphicsView):
 
     def mouseDoubleClickEvent(self, e):
         item = self.itemAt(e.position().toPoint())
-        # 找到顶层 AssetNode
         node = self._find_node(item)
         if node:
-            self.node_double_clicked.emit(node.kind, node.node_id)
+            # 文本节点 → 进入编辑文本模式;生成器节点 → 弹生成对话框;其他 → 跳编辑
+            if isinstance(node, TextNode):
+                self.node_action.emit("edit_text", node.kind, node.node_id)
+            elif isinstance(node, GeneratorNode):
+                self.node_action.emit("edit_generator", node.kind, node.node_id)
+            else:
+                self.node_double_clicked.emit(node.kind, node.node_id)
             return
         super().mouseDoubleClickEvent(e)
 
     def contextMenuEvent(self, e):
         item = self.itemAt(e.pos())
         node = self._find_node(item)
+        scene_pos = self.mapToScene(e.pos())
+
         if not node:
-            # 空白处右键 → 整体菜单
+            # 空白处右键
             menu = QMenu(self)
+            menu.addAction("🤖 在此生成图...",
+                          lambda: self.blank_action.emit("new_generator", scene_pos))
+            menu.addAction("📝 在此放文本",
+                          lambda: self.blank_action.emit("new_text", scene_pos))
+            menu.addSeparator()
             menu.addAction("🎯 适配所有节点", self.fit_all)
             menu.addAction("🔍 重置缩放 (100%)", self.reset_zoom)
             menu.exec(e.globalPos())
             return
-        # 节点右键
+
         menu = QMenu(self)
-        menu.addAction(f"📋 复制 {node.title} 的 prompt",
-                       lambda: self.node_action.emit("copy_prompt", node.kind, node.node_id))
-        if node.kind in ("character", "scene", "prop"):
-            menu.addAction("🤖 用 GPT 生成",
-                           lambda: self.node_action.emit("gen_gpt", node.kind, node.node_id))
-        if node.kind == "shot":
-            menu.addAction("🎨 拼故事板大图",
-                           lambda: self.node_action.emit("gen_storyboard", node.kind, node.node_id))
-            menu.addAction("🎬 用豆包生视频",
-                           lambda: self.node_action.emit("gen_video", node.kind, node.node_id))
-        menu.addSeparator()
-        menu.addAction("✎ 打开编辑",
-                       lambda: self.node_double_clicked.emit(node.kind, node.node_id))
+        if isinstance(node, GeneratorNode):
+            menu.addAction("✎ 编辑 / 重新生成",
+                          lambda: self.node_action.emit("edit_generator", node.kind, node.node_id))
+            menu.addSeparator()
+            menu.addAction("🗑 删除",
+                          lambda: self.node_action.emit("delete", node.kind, node.node_id))
+        elif isinstance(node, TextNode):
+            menu.addAction("✎ 编辑文本",
+                          lambda: self.node_action.emit("edit_text", node.kind, node.node_id))
+            menu.addSeparator()
+            menu.addAction("🗑 删除",
+                          lambda: self.node_action.emit("delete", node.kind, node.node_id))
+        else:
+            # AssetNode (角色/场景/道具/分镜)
+            title = getattr(node, "title", "节点")
+            menu.addAction(f"📋 复制 {title} 的 prompt",
+                          lambda: self.node_action.emit("copy_prompt", node.kind, node.node_id))
+            if node.kind in ("character", "scene", "prop"):
+                menu.addAction("🤖 用 GPT 生成",
+                              lambda: self.node_action.emit("gen_gpt", node.kind, node.node_id))
+            if node.kind == "shot":
+                menu.addAction("🎨 拼故事板大图",
+                              lambda: self.node_action.emit("gen_storyboard", node.kind, node.node_id))
+                menu.addAction("🎬 用豆包生视频",
+                              lambda: self.node_action.emit("gen_video", node.kind, node.node_id))
+            menu.addSeparator()
+            menu.addAction("✎ 打开编辑",
+                          lambda: self.node_double_clicked.emit(node.kind, node.node_id))
         menu.exec(e.globalPos())
 
-    def _find_node(self, item) -> Optional[AssetNode]:
+    def _find_node(self, item) -> Optional[_NodeBase]:
         while item:
-            if isinstance(item, AssetNode): return item
+            if isinstance(item, _NodeBase): return item
             item = item.parentItem()
         return None
 
-    # ---- 滚轮缩放 ----
     def wheelEvent(self, e):
         zoom_factor = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
         new_zoom = self._zoom * zoom_factor
@@ -319,11 +666,13 @@ class CanvasView(QGraphicsView):
         self._zoom = 1.0
 
     def fit_all(self):
-        if not self._nodes_by_id:
-            return
+        if not self._nodes_by_id: return
         rect = None
         for node in self._nodes_by_id.values():
-            r = node.sceneBoundingRect()
+            try:
+                r = node.sceneBoundingRect()
+            except RuntimeError:
+                continue
             rect = r if rect is None else rect.united(r)
         if rect:
             rect = rect.adjusted(-50, -50, 50, 50)
@@ -331,24 +680,52 @@ class CanvasView(QGraphicsView):
             self._zoom = self.transform().m11()
 
     # ---- 节点管理 ----
-    def add_node(self, node: AssetNode, pos: QPointF):
+    def add_node(self, node: _NodeBase, pos: QPointF):
         self.scene_.addItem(node)
         node.setPos(pos)
         self._nodes_by_id[node.node_id] = node
 
-    def clear_nodes(self):
+    def remove_node(self, node_id: str):
+        node = self._nodes_by_id.get(node_id)
+        if not node: return
+        # 先删与本节点相关的连线
+        to_remove = [ln for ln in self._connections
+                     if ln.src is node or ln.dst is node]
+        for ln in to_remove:
+            self.scene_.removeItem(ln)
+            self._connections.remove(ln)
+        self.scene_.removeItem(node)
+        del self._nodes_by_id[node_id]
+
+    def add_connection(self, src_id: str, dst_id: str):
+        src = self._nodes_by_id.get(src_id)
+        dst = self._nodes_by_id.get(dst_id)
+        if not src or not dst: return
+        # 重复检测
+        for ln in self._connections:
+            if ln.src is src and ln.dst is dst: return
+        ln = ConnectionLine(src, dst)
+        self.scene_.addItem(ln)
+        self._connections.append(ln)
+        src.add_connection(ln); dst.add_connection(ln)
+
+    def clear_all(self):
+        for ln in self._connections:
+            self.scene_.removeItem(ln)
+        self._connections.clear()
         for node in list(self._nodes_by_id.values()):
             self.scene_.removeItem(node)
         self._nodes_by_id.clear()
 
-    def get_positions(self) -> Dict[str, Tuple[float, float]]:
+    def get_asset_positions(self) -> Dict[str, Tuple[float, float]]:
         return {nid: (n.scenePos().x(), n.scenePos().y())
-                for nid, n in self._nodes_by_id.items()}
+                for nid, n in self._nodes_by_id.items()
+                if isinstance(n, AssetNode)}
 
 
 # =========================================================================
 class InfiniteCanvasView(QFrame):
-    """画布 tab 的容器:工具栏 + CanvasView。"""
+    """画布 tab 的容器:工具栏 + CanvasView + worker hookup。"""
 
     log = Signal(str)
 
@@ -357,60 +734,74 @@ class InfiniteCanvasView(QFrame):
         self.setObjectName("PanelAlt")
         self.owner = owner
         self.pid: Optional[str] = None
+        self._canvas_items: List[CanvasItem] = []
 
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        # 工具栏
         tb = QFrame(); tb.setObjectName("Panel")
         tbl = QHBoxLayout(tb); tbl.setContentsMargins(28, 16, 28, 14); tbl.setSpacing(8)
         title = QLabel("无限画布"); title.setObjectName("H2")
         tbl.addWidget(title)
-        sub = QLabel("拖动节点 · 滚轮缩放 · 中键 / Ctrl+左键 平移 · 右键节点出菜单")
+        sub = QLabel("空白处右键 = 在此生成 · 双击节点 = 编辑 · 滚轮缩放 · 中键平移")
         sub.setStyleSheet(f"color: {C['muted']}; font-size: 10.5px; margin-left: 8px;")
         tbl.addWidget(sub)
         tbl.addStretch()
 
+        add_gen_btn = QPushButton("🤖 新增生成器")
+        add_gen_btn.setObjectName("Accent")
+        add_gen_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        add_gen_btn.setToolTip("在画布中央放一个生成器节点")
+        add_gen_btn.clicked.connect(lambda: self._add_generator_at(QPointF(0, 0)))
+        tbl.addWidget(add_gen_btn)
+
+        add_text_btn = QPushButton("📝 新增文本")
+        add_text_btn.setObjectName("Subtle")
+        add_text_btn.clicked.connect(lambda: self._add_text_at(QPointF(0, 0)))
+        tbl.addWidget(add_text_btn)
+
         refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.setObjectName("Subtle")
-        refresh_btn.setCursor(QCursor(Qt.PointingHandCursor))
         refresh_btn.clicked.connect(self._refresh)
         tbl.addWidget(refresh_btn)
 
-        fit_btn = QPushButton("🎯 全览")
-        fit_btn.setObjectName("Subtle")
+        fit_btn = QPushButton("🎯 全览"); fit_btn.setObjectName("Subtle")
         fit_btn.clicked.connect(lambda: self.canvas.fit_all())
         tbl.addWidget(fit_btn)
 
-        reset_btn = QPushButton("🔍 100%")
-        reset_btn.setObjectName("Subtle")
+        reset_btn = QPushButton("🔍 100%"); reset_btn.setObjectName("Subtle")
         reset_btn.clicked.connect(lambda: self.canvas.reset_zoom())
         tbl.addWidget(reset_btn)
 
-        auto_btn = QPushButton("📐 自动布局")
-        auto_btn.setObjectName("Subtle")
-        auto_btn.setToolTip("按类型分区自动摆放节点")
+        auto_btn = QPushButton("📐 自动布局"); auto_btn.setObjectName("Subtle")
         auto_btn.clicked.connect(self._auto_layout)
         tbl.addWidget(auto_btn)
 
-        save_btn = QPushButton("💾 保存位置")
-        save_btn.setObjectName("Subtle")
-        save_btn.setToolTip("把当前节点位置存到项目")
-        save_btn.clicked.connect(self._save_positions)
+        save_btn = QPushButton("💾 保存"); save_btn.setObjectName("Subtle")
+        save_btn.clicked.connect(self._save_all)
         tbl.addWidget(save_btn)
 
         root.addWidget(tb); root.addWidget(Hline())
 
-        # 画布
         self.canvas = CanvasView()
         self.canvas.node_double_clicked.connect(self._on_node_dclick)
         self.canvas.node_action.connect(self._on_node_action)
+        self.canvas.blank_action.connect(self._on_blank_action)
         self.canvas.log.connect(self.log)
         root.addWidget(self.canvas, 1)
 
-        # 自动保存定时器(每 8 秒保存一次位置)
+        # 连接 Worker 完成信号
+        try:
+            from .playwright_worker import get_worker
+            w = get_worker()
+            w.task_done.connect(self._on_task_done)
+            w.task_failed.connect(self._on_task_failed)
+        except Exception as e:
+            print(f"无法挂接 worker 信号: {e}")
+
+        # 自动保存
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setInterval(8000)
-        self._autosave_timer.timeout.connect(self._save_positions)
+        self._autosave_timer.timeout.connect(self._save_all)
         self._autosave_timer.start()
 
     def load(self, pid: str):
@@ -419,83 +810,88 @@ class InfiniteCanvasView(QFrame):
 
     def _refresh(self):
         if not self.pid:
-            self.canvas.clear_nodes(); return
-        self.canvas.clear_nodes()
+            self.canvas.clear_all(); return
+        self.canvas.clear_all()
 
         positions = self._load_positions()
-        nodes_to_add = []   # (node_id, AssetNode)
+        nodes_to_add: List[_NodeBase] = []
 
-        # 颜色按类型分
-        kind_colors = {
-            "character": "#7c3aed",   # 紫
-            "scene":     "#0d9488",   # 青
-            "prop":      "#b45309",   # 棕
-            "shot":      "#dc5a3a",   # 珊瑚
-            "segment":   "#1e3a8a",   # 深蓝
-        }
+        # 1. 资产节点(角色/场景/道具/分镜)
+        chars = ST.load_characters(self.pid)
+        scenes = ST.load_scenes(self.pid)
+        props = ST.load_props(self.pid)
+        eps = ST.list_episodes(self.pid)
 
-        # 角色
-        for c in ST.load_characters(self.pid):
+        for c in chars:
             img = ST.asset_full_path(self.pid, c.reference_image) if c.reference_image else None
             sub = f"{c.role or ''}  {c.placeholder or ''}".strip()
-            node = AssetNode(c.id, "character", c.name, sub, img,
-                             color=kind_colors["character"])
-            nodes_to_add.append(node)
-
-        # 场景
-        for s in ST.load_scenes(self.pid):
+            nodes_to_add.append(AssetNode(c.id, "character", c.name, sub, img,
+                                          color=KIND_COLORS["character"]))
+        for s in scenes:
             img = ST.asset_full_path(self.pid, s.reference_image) if s.reference_image else None
             sub = s.placeholder or s.visual_style or ""
-            node = AssetNode(s.id, "scene", s.name, sub, img,
-                             color=kind_colors["scene"])
-            nodes_to_add.append(node)
-
-        # 道具
-        for p in ST.load_props(self.pid):
+            nodes_to_add.append(AssetNode(s.id, "scene", s.name, sub, img,
+                                          color=KIND_COLORS["scene"]))
+        for p in props:
             img = ST.asset_full_path(self.pid, p.reference_image) if p.reference_image else None
             sub = p.placeholder or (p.description[:40] if p.description else "")
-            node = AssetNode(p.id, "prop", p.name, sub, img,
-                             color=kind_colors["prop"])
-            nodes_to_add.append(node)
+            nodes_to_add.append(AssetNode(p.id, "prop", p.name, sub, img,
+                                          color=KIND_COLORS["prop"]))
 
-        # 分镜(每个 episode 的每个 shot)
-        for ep in ST.list_episodes(self.pid):
+        shots_index = {}   # shot_id → shot 对象(用于后面建连线)
+        for ep in eps:
             for shot in ep.shots:
+                shots_index[shot.id] = shot
                 img = ST.asset_full_path(self.pid, shot.generated_image) if shot.generated_image else None
                 title = f"分镜 #{shot.number}"
-                sub_parts = [shot.shot_size or "", shot.camera_movement or "",
-                             f"{shot.duration}s"]
-                if shot.action: sub_parts.append(shot.action[:25])
-                sub = "  ".join(filter(None, sub_parts))
-                node = AssetNode(shot.id, "shot", title, sub, img,
-                                 color=kind_colors["shot"])
-                nodes_to_add.append(node)
+                parts = [shot.shot_size or "", shot.camera_movement or "", f"{shot.duration}s"]
+                if shot.action: parts.append(shot.action[:25])
+                sub = "  ".join(filter(None, parts))
+                nodes_to_add.append(AssetNode(shot.id, "shot", title, sub, img,
+                                              color=KIND_COLORS["shot"]))
+
+        # 2. 画布自定义节点
+        self._canvas_items = ST.load_canvas_items(self.pid)
+        for item in self._canvas_items:
+            if item.kind == CANVAS_TEXT:
+                nodes_to_add.append(TextNode(item))
+            elif item.kind in (CANVAS_GENERATOR, CANVAS_IMAGE, CANVAS_VIDEO):
+                nodes_to_add.append(GeneratorNode(item))
 
         if not nodes_to_add:
-            self.log.emit("画布为空 — 先在角色/场景/分镜表里建几个对象")
+            self.log.emit("画布为空 — 在角色/场景/分镜表里建对象,或空白处右键「在此生成图」")
             return
 
-        # 摆放节点:有保存位置的用保存位置,否则用自动布局
+        # 3. 摆放 — 有保存位置用保存,否则自动布局
+        unplaced: List[_NodeBase] = []
         for node in nodes_to_add:
-            if node.node_id in positions:
+            if isinstance(node, (TextNode, GeneratorNode)):
+                pos = QPointF(node.canvas_item.x, node.canvas_item.y)
+                self.canvas.add_node(node, pos)
+            elif node.node_id in positions:
                 x, y = positions[node.node_id]
                 self.canvas.add_node(node, QPointF(x, y))
             else:
-                # 暂存,稍后自动布局
                 self.canvas.add_node(node, QPointF(0, 0))
+                unplaced.append(node)
 
-        # 没存过位置的,触发一次自动布局把没安置的散开
-        unplaced = [n for n in nodes_to_add if n.node_id not in positions]
         if unplaced:
             self._auto_layout(target_nodes=unplaced)
 
-        self.canvas.fit_all()
-        self.log.emit(f"画布加载 {len(nodes_to_add)} 个节点")
+        # 4. 建引用连线(角色/场景/道具 → 分镜)
+        for shot_id, shot in shots_index.items():
+            for cid in shot.character_ids:
+                self.canvas.add_connection(cid, shot_id)
+            for pid in shot.prop_ids:
+                self.canvas.add_connection(pid, shot_id)
+            if shot.scene_id:
+                self.canvas.add_connection(shot.scene_id, shot_id)
 
-    def _auto_layout(self, target_nodes: List[AssetNode] = None):
-        """按 kind 分区:
-        角色横排上 / 场景下一行 / 道具再下一行 / 分镜按集分行
-        """
+        self.canvas.fit_all()
+        n_canvas = sum(1 for it in self._canvas_items)
+        self.log.emit(f"画布加载 {len(nodes_to_add)} 节点 ({len(self.canvas._connections)} 连线,自定义 {n_canvas})")
+
+    def _auto_layout(self, target_nodes: List[_NodeBase] = None):
         if not self.pid: return
         nodes = target_nodes or list(self.canvas._nodes_by_id.values())
         if not nodes: return
@@ -504,26 +900,27 @@ class InfiniteCanvasView(QFrame):
         x_step = NODE_W + 30
         y_step = NODE_H + 40
 
-        by_kind = {"character": [], "scene": [], "prop": [], "shot": [], "segment": []}
+        by_kind = {"character": [], "scene": [], "prop": [], "shot": [],
+                   "text": [], "generator": [], "image": [], "video": []}
         for n in nodes:
-            if n.kind in by_kind: by_kind[n.kind].append(n)
+            by_kind.setdefault(n.kind, []).append(n)
 
-        kind_order = ["character", "scene", "prop", "shot", "segment"]
+        kind_order = ["character", "scene", "prop", "shot", "generator", "image", "video", "text"]
         cur_y = 0
         for kind in kind_order:
-            group = by_kind[kind]
+            group = by_kind.get(kind, [])
             if not group: continue
             for i, node in enumerate(group):
                 col = i % cols
                 row = i // cols
                 node.setPos(col * x_step, cur_y + row * y_step)
             rows = math.ceil(len(group) / cols)
-            cur_y += rows * y_step + 80   # 分组间距
+            cur_y += rows * y_step + 60
 
         self.canvas.fit_all()
         self.log.emit("自动布局已应用")
 
-    # ---- 位置持久化 ----
+    # ---- 持久化 ----
     def _positions_file(self) -> Path:
         return ST.project_dir(self.pid) / "canvas.json"
 
@@ -533,29 +930,177 @@ class InfiniteCanvasView(QFrame):
         if not f.exists(): return {}
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
-            return {k: tuple(v) for k, v in data.items() if isinstance(v, (list, tuple)) and len(v) == 2}
+            return {k: tuple(v) for k, v in data.items()
+                    if isinstance(v, (list, tuple)) and len(v) == 2}
         except Exception:
             return {}
 
-    def _save_positions(self):
+    def _save_all(self):
         if not self.pid: return
-        positions = self.canvas.get_positions()
-        if not positions: return
-        try:
-            self._positions_file().write_text(
-                json.dumps(positions, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            self.log.emit(f"画布位置保存失败: {e}")
+        # 资产节点位置 → canvas.json
+        positions = self.canvas.get_asset_positions()
+        if positions:
+            try:
+                self._positions_file().write_text(
+                    json.dumps(positions, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception as e:
+                self.log.emit(f"位置保存失败: {e}")
+        # 画布自定义节点 → canvas_items.json
+        # 同步当前画布上的 TextNode/GeneratorNode 的 canvas_item 到列表
+        active_items = []
+        for node in self.canvas._nodes_by_id.values():
+            if isinstance(node, (TextNode, GeneratorNode)):
+                active_items.append(node.canvas_item)
+        if active_items or self._canvas_items:
+            try:
+                ST.save_canvas_items(self.pid, active_items)
+                self._canvas_items = active_items
+            except Exception as e:
+                self.log.emit(f"画布项保存失败: {e}")
 
-    # ---- 节点交互 ----
+    # ---- 新增节点 ----
+    def _add_generator_at(self, scene_pos: QPointF):
+        """空白处放新生成器节点 — 弹对话框设置 prompt。"""
+        item = CanvasItem(
+            kind=CANVAS_GENERATOR, project_id=self.pid,
+            x=scene_pos.x(), y=scene_pos.y(),
+        )
+        dlg = GeneratorDialog(self, item)
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        item = dlg.commit()
+        if not item.prompt.strip():
+            self.log.emit("prompt 为空,已取消"); return
+
+        # 入队
+        item.status = "queued"
+        node = GeneratorNode(item)
+        self.canvas.add_node(node, scene_pos)
+
+        from .task_queue import get_queue
+        from .playwright_worker import get_worker
+        task = GenerationTask(
+            project_id=self.pid,
+            task_type=item.task_type,
+            backend_id=item.backend_id,
+            title=item.title or "画布生成",
+            prompt=item.prompt,
+            target_kind="canvas_item",
+            target_id=item.id,
+        )
+        item.task_id = task.id
+        get_queue().enqueue(task)
+        worker = get_worker()
+        if worker.is_available() and not worker._running:
+            worker.start()
+        self._save_all()
+        self.log.emit(f"画布生成已入队: {item.title or '(无标题)'}")
+
+    def _add_text_at(self, scene_pos: QPointF):
+        text, ok = QInputDialog.getText(self, "新增文本节点", "文本内容:")
+        if not ok or not text.strip(): return
+        item = CanvasItem(
+            kind=CANVAS_TEXT, project_id=self.pid,
+            x=scene_pos.x(), y=scene_pos.y(),
+            text=text.strip(),
+        )
+        node = TextNode(item)
+        self.canvas.add_node(node, scene_pos)
+        self._save_all()
+
+    # ---- 交互回调 ----
     def _on_node_dclick(self, kind: str, node_id: str):
-        """双击节点 → 跳到对应资产编辑器(通过 owner 信号通知 ProjectNavigator)"""
         if self.owner and hasattr(self.owner, "open_asset"):
             self.owner.open_asset(kind, node_id)
 
     def _on_node_action(self, action: str, kind: str, node_id: str):
-        """右键菜单动作。"""
+        if action == "edit_text":
+            node = self.canvas._nodes_by_id.get(node_id)
+            if isinstance(node, TextNode):
+                cur = node.canvas_item.text
+                text, ok = QInputDialog.getMultiLineText(
+                    self, "编辑文本", "文本内容:", cur)
+                if ok:
+                    node.set_text(text.strip())
+                    self._save_all()
+            return
+        if action == "edit_generator":
+            node = self.canvas._nodes_by_id.get(node_id)
+            if isinstance(node, GeneratorNode):
+                if node.canvas_item.status in ("queued", "running"):
+                    self.log.emit("正在生成中,稍候")
+                    return
+                dlg = GeneratorDialog(self, node.canvas_item)
+                if dlg.exec() != QDialog.DialogCode.Accepted: return
+                item = dlg.commit()
+                # 重新入队
+                from .task_queue import get_queue
+                from .playwright_worker import get_worker
+                item.status = "queued"
+                item.result_file = ""
+                item.error = ""
+                task = GenerationTask(
+                    project_id=self.pid,
+                    task_type=item.task_type,
+                    backend_id=item.backend_id,
+                    title=item.title or "画布生成",
+                    prompt=item.prompt,
+                    target_kind="canvas_item",
+                    target_id=item.id,
+                )
+                item.task_id = task.id
+                node._render()  # 刷新节点显示
+                get_queue().enqueue(task)
+                w = get_worker()
+                if w.is_available() and not w._running: w.start()
+                self._save_all()
+                self.log.emit(f"重新生成已入队: {item.title or '(无标题)'}")
+            return
+        if action == "delete":
+            self.canvas.remove_node(node_id)
+            self._save_all()
+            return
+        # 资产节点动作 → 委托 owner
         if self.owner and hasattr(self.owner, "node_action"):
             self.owner.node_action(action, kind, node_id)
-        else:
-            self.log.emit(f"动作 {action} 触发于 {kind} {node_id}")
+
+    def _on_blank_action(self, action: str, scene_pos: QPointF):
+        if action == "new_generator":
+            self._add_generator_at(scene_pos)
+        elif action == "new_text":
+            self._add_text_at(scene_pos)
+
+    # ---- Worker 信号回调 ----
+    def _on_task_done(self, task_id: str):
+        """worker 完成一个 task → 找到画布上对应的生成器节点更新。"""
+        # 通过 task_id 反查 canvas_item
+        for node in self.canvas._nodes_by_id.values():
+            if not isinstance(node, GeneratorNode): continue
+            if node.canvas_item.task_id == task_id:
+                # 重新读 canvas_items.json 拿到 result_file
+                items = ST.load_canvas_items(self.pid)
+                for it in items:
+                    if it.id == node.canvas_item.id:
+                        node.canvas_item.status = it.status
+                        node.canvas_item.result_file = it.result_file
+                        node.canvas_item.kind = it.kind
+                        node._render()
+                        self.log.emit(f"画布节点已更新: {it.title or it.id}")
+                        return
+
+    def _on_task_failed(self, task_id: str, error: str):
+        for node in self.canvas._nodes_by_id.values():
+            if not isinstance(node, GeneratorNode): continue
+            if node.canvas_item.task_id == task_id:
+                node.update_status("failed", error=error)
+                # 持久化
+                items = ST.load_canvas_items(self.pid) or []
+                found = False
+                for it in items:
+                    if it.id == node.canvas_item.id:
+                        it.status = "failed"
+                        it.error = error
+                        found = True; break
+                if not found:
+                    items.append(node.canvas_item)
+                ST.save_canvas_items(self.pid, items)
+                return
