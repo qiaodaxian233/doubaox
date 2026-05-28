@@ -468,16 +468,99 @@ class Worker(QObject):
                     if page:
                         sel = profile.result_video_in if task.task_type == TASK_TYPE_VIDEO else profile.result_image_in
                         if sel:
+                            # 上面 marker 已经命中过 → result_selector 大概率已经在 DOM 里;
+                            # 即便没命中(profile 没配 completion_text_marker),也别再等 5 分钟,
+                            # 给个 10s 短等够了。这是之前"抓的太慢"的真凶 —
+                            # aimonkey 镜像不用 [data-message-author-role=assistant] 这个属性,
+                            # 老代码 timeout=300_000 把 5 分钟全耗完才走到 query。
                             if profile.result_selector:
-                                try: page.wait_for_selector(profile.result_selector, timeout=300_000)
+                                try: page.wait_for_selector(profile.result_selector, timeout=10_000)
                                 except Exception: pass
-                            time.sleep(2)
+                            time.sleep(1.0)  # 给 SPA 一点渲染时间(从 2s 砍到 1s)
                             els = page.query_selector_all(sel)
-                            if els:
-                                # 取最后一个(最新生成)
-                                src = els[-1].get_attribute("src") or els[-1].get_attribute("data-src")
+                            # 兜底:specific CDN selectors 全 miss → 退到「最新消息容器内最大的 img」
+                            if not els and task.task_type != TASK_TYPE_VIDEO:
+                                fallback_js = """
+                                (resultSel) => {
+                                  // 找最新 message 容器
+                                  let containers = [];
+                                  if (resultSel) {
+                                    for (const s of resultSel.split(',')) {
+                                      const arr = document.querySelectorAll(s.trim());
+                                      if (arr.length) { containers = [...arr]; break; }
+                                    }
+                                  }
+                                  const scope = containers.length
+                                    ? containers[containers.length - 1]
+                                    : document.body;
+                                  // 在 scope 里挑面积最大的 img
+                                  let best = null, bestArea = 0;
+                                  scope.querySelectorAll('img').forEach(img => {
+                                    if (!img.src || img.src.startsWith('data:')) return;
+                                    const w = img.naturalWidth || img.width || 0;
+                                    const h = img.naturalHeight || img.height || 0;
+                                    const area = w * h;
+                                    if (area > bestArea && area > 100*100) {
+                                      best = img; bestArea = area;
+                                    }
+                                  });
+                                  return best ? {
+                                    src: best.src,
+                                    naturalW: best.naturalWidth, naturalH: best.naturalHeight,
+                                    parentHref: best.closest('a') ? best.closest('a').href : '',
+                                  } : null;
+                                }
+                                """
+                                try:
+                                    fb = page.evaluate(fallback_js, profile.result_selector or "")
+                                except Exception:
+                                    fb = None
+                                if fb:
+                                    src_url = fb.get("parentHref") or fb.get("src")
+                                    self.log.emit(
+                                        f"[{task.title}] 兜底找到大图: "
+                                        f"{fb['naturalW']}x{fb['naturalH']} "
+                                        f"src={('a[href]' if fb.get('parentHref') else 'img[src]')}"
+                                    )
+                                    referer = ""
+                                    try: referer = page.url or ""
+                                    except Exception: pass
+                                    found_file = self._download_via_http(
+                                        src_url, session_downloads, referer=referer,
+                                    )
+                                    if not found_file:
+                                        found_file = self._download_via_browser(
+                                            page, src_url, session_downloads,
+                                        )
+                                    if found_file:
+                                        self.log.emit(f"[{task.title}] HTTP 抓产物成功(兜底): {found_file.name}")
+                            elif els:
+                                # 命中了 selector chain — 取最后一个(最新生成的)
+                                # 优先用 parent <a href>(很多镜像 img 是缩略图,href 才是原图)
+                                last_el = els[-1]
+                                src = None
+                                src_kind = "img[src]"
+                                try:
+                                    href = last_el.evaluate(
+                                        "el => { const a = el.closest('a'); return a ? a.href : ''; }"
+                                    )
+                                    if href and not href.startswith("javascript"):
+                                        src = href
+                                        src_kind = "a[href] (原图链接)"
+                                except Exception: pass
+                                if not src:
+                                    src = last_el.get_attribute("src") or last_el.get_attribute("data-src")
+                                # 记录尺寸
+                                try:
+                                    dims = last_el.evaluate(
+                                        "el => ({ nw: el.naturalWidth||0, nh: el.naturalHeight||0 })"
+                                    )
+                                    self.log.emit(
+                                        f"[{task.title}] 选中产物: {src_kind} "
+                                        f"img 原始尺寸 {dims.get('nw')}x{dims.get('nh')}"
+                                    )
+                                except Exception: pass
                                 if src:
-                                    # 传 page.url 做 Referer(豆包 douyinvod 签名 URL 要求)
                                     referer = ""
                                     try: referer = page.url or ""
                                     except Exception: pass

@@ -592,11 +592,21 @@ class GeneratorDialog(QDialog):
 
         l.addLayout(f)
 
-        l.addWidget(QLabel("Prompt:"))
+        # Prompt label + 模板按钮 同一行
+        prompt_row = QHBoxLayout()
+        prompt_row.addWidget(QLabel("Prompt:"))
+        prompt_row.addStretch()
+        tpl_btn = QPushButton("📋 套模板")
+        tpl_btn.setObjectName("Subtle")
+        tpl_btn.setToolTip("从内置模板库填一份现成 prompt(角色三视图 / 场景固定 / 分镜板 等)")
+        tpl_btn.clicked.connect(self._pick_template)
+        prompt_row.addWidget(tpl_btn)
+        l.addLayout(prompt_row)
         self.prompt_box = QPlainTextEdit()
         self.prompt_box.setPlainText(self.canvas_item.prompt or "")
         self.prompt_box.setPlaceholderText(
-            "示例:陆渊在矿坑里发现紫金符文,光线从地面渗出,8K 电影感。"
+            "示例:陆渊在矿坑里发现紫金符文,光线从地面渗出,8K 电影感。\n\n"
+            "或者点右上的 📋 套模板 快速生成结构化 prompt。"
         )
         self.prompt_box.setMinimumHeight(180)
         l.addWidget(self.prompt_box)
@@ -606,6 +616,76 @@ class GeneratorDialog(QDialog):
         ok = b.addButton("发起生成", QDialogButtonBox.AcceptRole); ok.setObjectName("Primary")
         b.accepted.connect(self.accept); b.rejected.connect(self.reject)
         l.addWidget(b)
+
+    def _pick_template(self):
+        """打开模板挑选器:列出 prompts.DEFAULT_PROMPT_TEMPLATES,
+        选中后弹一个简单表单收占位符的值,然后渲染填进 prompt 框。"""
+        from .prompts import DEFAULT_PROMPT_TEMPLATES, render_template
+        # 1. 选模板
+        names = [f"[{t.category}] {t.title}" for t in DEFAULT_PROMPT_TEMPLATES]
+        if not names:
+            QMessageBox.information(self, "无模板", "模板库为空。")
+            return
+        choice, ok = QInputDialog.getItem(
+            self, "选模板", "选一个模板填到 Prompt 框:", names, 0, False
+        )
+        if not ok: return
+        idx = names.index(choice)
+        tpl = DEFAULT_PROMPT_TEMPLATES[idx]
+        # 2. 若有占位符,弹个表单收值
+        values = {}
+        if tpl.placeholders:
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"填模板占位符 — {tpl.title}")
+            dlg.setMinimumWidth(520)
+            dl = QVBoxLayout(dlg); dl.setSpacing(10)
+            dl.addWidget(QLabel(f"模板:{tpl.title}"))
+            fm = QFormLayout(); fm.setSpacing(8)
+            editors = {}
+            # 给一些常见占位符预填默认值
+            DEFAULTS = {
+                "style": "2D 写实国漫,东方玄幻",
+                "gender": "男",
+                "age": "成年",
+                "name": "",
+                "appearance": "",
+                "aspect_ratio": "16:9",
+                "asset_description": "",
+            }
+            for ph in tpl.placeholders:
+                ed = QPlainTextEdit()
+                ed.setMaximumHeight(70 if ph in ("appearance", "asset_description") else 32)
+                ed.setPlainText(DEFAULTS.get(ph, ""))
+                fm.addRow(ph, ed)
+                editors[ph] = ed
+            dl.addLayout(fm)
+            bb = QDialogButtonBox()
+            bb.addButton("取消", QDialogButtonBox.RejectRole)
+            bb.addButton("套用", QDialogButtonBox.AcceptRole)
+            bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+            dl.addWidget(bb)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            for ph, ed in editors.items():
+                values[ph] = ed.toPlainText().strip() or "(未指定)"
+        # 3. 渲染并塞进 prompt box
+        try:
+            rendered = render_template(tpl, **values) if values else tpl.content
+        except Exception as e:
+            QMessageBox.warning(self, "模板渲染失败", str(e))
+            return
+        # 已有内容时让用户选合并方式
+        if self.prompt_box.toPlainText().strip():
+            ans = QMessageBox.question(
+                self, "已有 Prompt", "Prompt 框已有内容,要怎么处理?",
+                QMessageBox.StandardButton.Yes |  # 覆盖
+                QMessageBox.StandardButton.No |   # 追加到末尾
+                QMessageBox.StandardButton.Cancel,
+            )
+            if ans == QMessageBox.StandardButton.Cancel: return
+            if ans == QMessageBox.StandardButton.No:
+                rendered = self.prompt_box.toPlainText() + "\n\n" + rendered
+        self.prompt_box.setPlainText(rendered)
 
     def _on_type_change(self):
         # 类型切换时,如果当前 backend 不匹配,自动切到合适的

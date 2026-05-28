@@ -636,6 +636,15 @@ class CharactersView(_AssetGridView):
             "skin_details": c.skin_details, "style_lock": c.style_lock,
             "hair": c.hair, "body": c.body,
         }, ensure_ascii=False, indent=2)
+        # 从角色字段拼一句通顺的外观描述,塞进 {appearance}
+        appearance_parts = []
+        for label, val in (
+            ("发型", c.hair), ("体态", c.body),
+            ("脸型", c.face_shape), ("眼部", c.eye_details),
+            ("肤质", c.skin_details), ("整体风格锁", c.style_lock),
+        ):
+            if val: appearance_parts.append(f"{label}={val}")
+        appearance = ";".join(appearance_parts) if appearance_parts else "(见下方结构化数据)"
         tpl = get_template("tpl-char-001")
         if tpl:
             header = render_template(
@@ -644,10 +653,11 @@ class CharactersView(_AssetGridView):
                 name=c.name,
                 gender=c.gender or "未指定",
                 age=c.age or "成年",
+                appearance=appearance,
             )
         else:
             header = f"{c.visual_style or '2D动画风格'}。生成角色 {c.name} 的三视图。"
-        full = f"{header}\n\n**结构化面部数据:**\n\n```json\n{struct}\n```"
+        full = f"{header}\n\n**结构化面部数据(供 GPT 内部参考,不要在图上显示):**\n\n```json\n{struct}\n```"
         if c.notes:
             full += f"\n\n**备注:** {c.notes}"
         msg = _enqueue_task(
