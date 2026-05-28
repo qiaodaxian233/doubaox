@@ -281,6 +281,9 @@ class Account:
     # 兼容旧版字段
     video_quota_total: int = 5
     video_quota_used: int = 0
+    # 挂载模式 — 空 = Playwright 启 Chromium(隔离环境);
+    # 非空(如 http://localhost:9222) = 连 CDP 到用户已开的 Chrome
+    attach_cdp_url: str = ""
 
     def remaining(self) -> int:
         self._maybe_reset()

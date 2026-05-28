@@ -352,16 +352,25 @@ class BackendPanel(QFrame):
         # 🌐 打开浏览器扫码登录 — 关键功能
         login_btn = QPushButton("🌐"); login_btn.setObjectName("IconOnly")
         login_btn.setFixedSize(22, 22)
+        attach_mode = "CDP" if acc.attach_cdp_url else "Playwright"
         if is_online:
             login_btn.setToolTip(
-                f"浏览器已开 — 点击聚焦窗口\n"
-                f"扫码登录后,cookie 自动保存到\n~/.doubao-studio/profiles/{acc.id}/"
+                f"模式: {attach_mode} (已在线)\n"
+                f"点击聚焦或重新跳转;扫码登录后 cookie 自动保存"
+            )
+        elif acc.attach_cdp_url:
+            login_btn.setToolTip(
+                f"模式: 挂载本机 Chrome ({acc.attach_cdp_url})\n"
+                f"先确保你已用 --remote-debugging-port 启动了 Chrome\n"
+                f"点击 → 工具通过 CDP 连过去,复用你的登录"
             )
         else:
             login_btn.setToolTip(
-                f"打开 Chromium 浏览器,跳转到 {acc.backend_id} 主页\n"
-                f"用手机/微信扫码登录后,cookie 自动保存\n"
-                f"以后生成任务时无需重新登录"
+                f"模式: Playwright 自启 Chromium(隔离环境)\n"
+                f"打开浏览器跳到 {acc.backend_id} 主页\n"
+                f"扫码登录后 cookie 保存,以后任务无需重登\n"
+                f"\n"
+                f"👉 想用你自己的 Chrome?点旁边的 ⚙ 切到 CDP 挂载模式"
             )
         login_btn.setStyleSheet(
             f"font-size: 13px;"
@@ -369,6 +378,18 @@ class BackendPanel(QFrame):
         )
         login_btn.clicked.connect(lambda: self._launch_browser(acc.id))
         h.addWidget(login_btn)
+
+        # ⚙ 切换挂载模式
+        mode_btn = QPushButton("⚙"); mode_btn.setObjectName("IconOnly")
+        mode_btn.setFixedSize(20, 20)
+        mode_btn.setToolTip(
+            f"切换浏览器挂载模式\n"
+            f"当前: {attach_mode}\n\n"
+            f"Playwright: 工具自启隔离 Chromium(默认,需扫码)\n"
+            f"CDP: 挂载本机已开的 Chrome(复用你的登录)"
+        )
+        mode_btn.clicked.connect(lambda: self._toggle_attach_mode(acc.id))
+        h.addWidget(mode_btn)
 
         rm = QPushButton("✕"); rm.setObjectName("IconOnly")
         rm.setFixedSize(20, 20); rm.setToolTip("删除账号")
@@ -391,6 +412,8 @@ class BackendPanel(QFrame):
 
         cookie 通过 launch_persistent_context 自动保存,
         以后任务派发时无需重新登录。
+
+        若 acc.attach_cdp_url 非空,改走 CDP 挂载到已开 Chrome(复用用户登录)。
         """
         acc = next((a for a in self.accounts if a.id == acc_id), None)
         if not acc:
@@ -426,27 +449,90 @@ class BackendPanel(QFrame):
         QGuiApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             if not sess.status.online:
-                self.log.emit(f"[{acc.name}] 启动 Chromium...")
-                sess.start(headless=False)
-                self.log.emit(f"[{acc.name}] 浏览器已启动,跳转到 {backend.url}")
+                if acc.attach_cdp_url:
+                    self.log.emit(f"[{acc.name}] 挂载到 {acc.attach_cdp_url}...")
+                    sess.attach_cdp(acc.attach_cdp_url)
+                    self.log.emit(f"[{acc.name}] 已挂载本机 Chrome")
+                else:
+                    self.log.emit(f"[{acc.name}] 启动 Chromium...")
+                    sess.start(headless=False)
+                    self.log.emit(f"[{acc.name}] 浏览器已启动,跳转到 {backend.url}")
             sess.goto(backend.url)
             self.log.emit(
                 f"[{acc.name}] 已打开 {backend.name} — 请在弹出的浏览器扫码登录\n"
                 f"  cookie 会自动保存到 ~/.doubao-studio/profiles/{acc_id}/\n"
                 f"  以后生成任务时无需重新登录"
             )
-            self._render()   # 刷新行,在线点变绿
+            self._render()
         except Exception as e:
             err_msg = str(e)
             tip = ""
-            if "chrome" in err_msg.lower() or "chromium" in err_msg.lower():
+            low = err_msg.lower()
+            if "has been closed" in low or "target" in low:
+                tip = ("\n\n看起来浏览器在刚才被关掉了。\n"
+                       "再点一次 🌐 应该会重新启动。")
+            elif "chrome" in low or "chromium" in low:
                 tip = ("\n\n可能原因:\n"
                        "1. 未装 Chromium → 跑 `playwright install chromium`\n"
                        "2. 本机 Chrome 版本过旧 → 升级或装 Chromium")
+            elif "cdp" in low or "9222" in err_msg or "connect" in low:
+                tip = ("\n\nCDP 挂载失败。检查:\n"
+                       "1. Chrome 是否用 --remote-debugging-port=9222 启动了\n"
+                       "2. 端口号是否对(默认 9222)\n"
+                       "3. 浏览器里访问 http://localhost:9222 看是否有响应")
             QMessageBox.critical(self, "启动失败", f"{err_msg}{tip}")
             self.log.emit(f"[{acc.name}] 启动失败: {err_msg}")
         finally:
             QGuiApplication.restoreOverrideCursor()
+
+    def _toggle_attach_mode(self, acc_id: str):
+        """切换账号的挂载模式(Playwright vs CDP)。"""
+        acc = next((a for a in self.accounts if a.id == acc_id), None)
+        if not acc: return
+
+        if acc.attach_cdp_url:
+            # 当前 = CDP 模式 → 切回 Playwright
+            from PySide6.QtWidgets import QMessageBox as _M
+            r = _M.question(
+                self, "切回 Playwright 模式",
+                f"切回工具自启 Chromium 模式吗?\n"
+                f"(隔离 cookie,首次需在工具的浏览器里重新扫码登录)"
+            )
+            if r != _M.Yes: return
+            # 先停掉现有 session
+            try:
+                from .playwright_session import get_pool
+                sess = get_pool().get(acc.id)
+                if sess: sess.stop()
+            except Exception: pass
+            acc.attach_cdp_url = ""
+            ST.save_accounts(self.accounts)
+            self.log.emit(f"[{acc.name}] 已切回 Playwright 模式")
+            self._render()
+        else:
+            # 当前 = Playwright → 切到 CDP
+            from PySide6.QtWidgets import QInputDialog
+            text, ok = QInputDialog.getText(
+                self, "挂载到已开 Chrome",
+                "调试端口 URL(默认 http://localhost:9222):\n\n"
+                "先在终端启动 Chrome:\n"
+                "  macOS:  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222\n"
+                "  Win:    \"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --remote-debugging-port=9222\n"
+                "  Linux:  google-chrome --remote-debugging-port=9222\n\n"
+                "然后在新开的 Chrome 里登录账号,再回来确定。",
+                text="http://localhost:9222"
+            )
+            if not ok or not text.strip(): return
+            # 先停掉现有
+            try:
+                from .playwright_session import get_pool
+                sess = get_pool().get(acc.id)
+                if sess: sess.stop()
+            except Exception: pass
+            acc.attach_cdp_url = text.strip()
+            ST.save_accounts(self.accounts)
+            self.log.emit(f"[{acc.name}] 已切到 CDP 挂载模式: {acc.attach_cdp_url}")
+            self._render()
 
     def _add_account(self, backend_id: str):
         b = ST.get_backend(backend_id)

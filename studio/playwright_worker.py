@@ -165,14 +165,69 @@ class Worker(QObject):
                 self.task_done.emit(task.id)
                 return
 
-            # 7b. 图片/视频任务:监听下载
-            self.log.emit(f"[{task.title}] 等用户在浏览器完成生成 + 下载...")
+            # 7b. 图片/视频任务:三层 fallback 取产物
+            #   层 1: 配了 download_btn → page.expect_download() + 自动点击
+            #   层 2: 配了 result_image_in / result_video_in → 直接抓图片 src 用 requests 下载
+            #   层 3: 啥都没配 → 监听 Downloads 目录(等用户手动右键保存)
+            self.log.emit(f"[{task.title}] 等生成完成 + 取产物...")
             session_downloads = session.downloads_dir
             os_downloads = self._guess_os_downloads()
-            found_file = self._wait_for_download(
-                [session_downloads, os_downloads],
-                timeout=600
-            )
+
+            found_file = None
+
+            # 层 1: 自动点下载
+            if profile.download_btn:
+                try:
+                    page = session.page()
+                    if page:
+                        # 先等生成完成的标志(result_selector 出现)
+                        if profile.result_selector:
+                            try:
+                                page.wait_for_selector(profile.result_selector, timeout=300_000)
+                                time.sleep(2)  # 给 SPA 一点渲染时间
+                            except Exception:
+                                pass
+                        # 用 expect_download 抓下载事件
+                        with page.expect_download(timeout=60_000) as dl_info:
+                            session.click(profile.download_btn)
+                        download = dl_info.value
+                        target = session_downloads / download.suggested_filename
+                        download.save_as(str(target))
+                        if target.exists():
+                            found_file = target
+                            self.log.emit(f"[{task.title}] 自动下载成功: {target.name}")
+                except Exception as e:
+                    self.log.emit(f"[{task.title}] 自动下载失败 ({e}),退化到监听模式")
+
+            # 层 2: 抓 img/video src 直接 HTTP 下
+            if not found_file and (profile.result_image_in or profile.result_video_in):
+                try:
+                    page = session.page()
+                    if page:
+                        sel = profile.result_video_in if task.task_type == TASK_TYPE_VIDEO else profile.result_image_in
+                        if sel:
+                            if profile.result_selector:
+                                try: page.wait_for_selector(profile.result_selector, timeout=300_000)
+                                except Exception: pass
+                            time.sleep(2)
+                            els = page.query_selector_all(sel)
+                            if els:
+                                # 取最后一个(最新生成)
+                                src = els[-1].get_attribute("src") or els[-1].get_attribute("data-src")
+                                if src:
+                                    found_file = self._download_via_http(src, session_downloads)
+                                    if found_file:
+                                        self.log.emit(f"[{task.title}] HTTP 抓图成功: {found_file.name}")
+                except Exception as e:
+                    self.log.emit(f"[{task.title}] HTTP 抓图失败 ({e})")
+
+            # 层 3: 监听 Downloads 目录(用户手动下载)
+            if not found_file:
+                self.log.emit(f"[{task.title}] 等用户在浏览器手动下载...")
+                found_file = self._wait_for_download(
+                    [session_downloads, os_downloads],
+                    timeout=600
+                )
 
             if not found_file:
                 q.mark_failed(task.id, "10 分钟内没监听到新文件")
@@ -198,6 +253,29 @@ class Worker(QObject):
             q.mark_failed(task.id, str(e))
             self.log.emit(f"[{task.title}] 失败: {e}")
             self.task_failed.emit(task.id, str(e))
+
+    def _download_via_http(self, src_url: str, save_dir: Path) -> Optional[Path]:
+        """直接 HTTP GET 图片/视频 src(blob: URL 用 Playwright 的 fetch)。"""
+        import urllib.request, urllib.parse, uuid as _uuid
+        if not src_url: return None
+        save_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            # blob: URL 不能用 urllib;留给后面用 page.evaluate
+            if src_url.startswith("blob:") or src_url.startswith("data:"):
+                return None
+            # 推断扩展
+            parsed = urllib.parse.urlparse(src_url)
+            ext = Path(parsed.path).suffix or ".png"
+            if len(ext) > 6: ext = ".png"
+            target = save_dir / f"http_{_uuid.uuid4().hex[:8]}{ext}"
+            req = urllib.request.Request(src_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            with urllib.request.urlopen(req, timeout=30) as r:
+                target.write_bytes(r.read())
+            return target if target.exists() and target.stat().st_size > 1024 else None
+        except Exception:
+            return None
 
     def _guess_os_downloads(self) -> Path:
         from .downloads_watcher import default_downloads_dir

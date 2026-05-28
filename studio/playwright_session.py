@@ -80,10 +80,71 @@ class AccountSession:
                 accept_downloads=True,
                 downloads_path=str(self.downloads_dir),
             )
+        # 注册 close 回调 — 用户手关浏览器时同步 online=False
+        try:
+            self._ctx.on("close", lambda _ctx=None: self._on_ctx_closed())
+        except Exception:
+            pass
         # 第一个页面
         pages = self._ctx.pages
         self._page = pages[0] if pages else self._ctx.new_page()
+        # 页面关闭也记一下
+        try:
+            self._page.on("close", lambda _p=None: self._on_page_closed())
+        except Exception:
+            pass
         self.status.online = True
+        self.status.error = ""
+
+    def attach_cdp(self, cdp_url: str = "http://localhost:9222"):
+        """挂载到已运行的 Chrome(用户用 --remote-debugging-port=9222 启动的)。
+
+        用法:
+          1. 关掉所有 Chrome 窗口(否则 --user-data-dir 会被锁)
+          2. 终端跑:
+             macOS: /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome --remote-debugging-port=9222
+             Win:   "C:/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222
+             Linux: google-chrome --remote-debugging-port=9222
+          3. 在新开的 Chrome 里登好账号
+          4. 工具调本方法,通过 CDP 连过去
+        """
+        if self._ctx: return
+        self._pw = sync_playwright().start()
+        # connect_over_cdp 返回 Browser 对象,默认有一个 context
+        browser = self._pw.chromium.connect_over_cdp(cdp_url)
+        contexts = browser.contexts
+        if not contexts:
+            self._ctx = browser.new_context()
+        else:
+            self._ctx = contexts[0]
+        # 拿第一个已有页面或新建
+        pages = self._ctx.pages
+        self._page = pages[0] if pages else self._ctx.new_page()
+        try:
+            self._page.on("close", lambda _p=None: self._on_page_closed())
+        except Exception:
+            pass
+        self._browser_attached = browser  # 保引用避免 GC
+        self.status.online = True
+        self.status.current_url = self._page.url if self._page else ""
+        self.status.error = ""
+
+    def _on_ctx_closed(self):
+        self.status.online = False
+        self._ctx = None
+        self._page = None
+
+    def _on_page_closed(self):
+        # 页面没了,但 ctx 可能还活着(用户只关了 tab)。尝试取第一个 page
+        try:
+            if self._ctx and self._ctx.pages:
+                self._page = self._ctx.pages[0]
+                return
+        except Exception:
+            pass
+        # 没救了
+        self.status.online = False
+        self._page = None
 
     def stop(self):
         try:
@@ -97,9 +158,27 @@ class AccountSession:
         self.status.online = False
 
     def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30_000):
-        if not self._page: raise RuntimeError("session 未启动")
-        self._page.goto(url, wait_until=wait_until, timeout=timeout)
-        self.status.current_url = url
+        """打开 URL。若浏览器已被手动关闭,自动重启再试一次。"""
+        if not self._page or not self.status.online:
+            # 已掉线 → 重启再试
+            self.stop()
+            self.start(headless=False)
+        try:
+            self._page.goto(url, wait_until=wait_until, timeout=timeout)
+            self.status.current_url = url
+        except Exception as e:
+            err = str(e).lower()
+            # 检测 closed:Page.goto/Target page/browser has been closed
+            closed_signals = ("has been closed", "target closed", "target page",
+                              "browser has been closed", "context was closed")
+            if any(s in err for s in closed_signals):
+                # 重启 + 重试一次
+                self.stop()
+                self.start(headless=False)
+                self._page.goto(url, wait_until=wait_until, timeout=timeout)
+                self.status.current_url = url
+                return
+            raise
 
     def page(self) -> Optional[Page]:
         return self._page
