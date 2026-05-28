@@ -204,6 +204,50 @@ class AccountSession:
         except Exception:
             return False
 
+    def set_input_files(self, selector: str, files) -> bool:
+        """把文件注入到 file input(用于 TXT 附件上传、参考图上传)。
+
+        files: 单个 str/Path 或列表
+        """
+        if not self._page: return False
+        if not isinstance(files, (list, tuple)):
+            files = [files]
+        paths = [str(p) for p in files]
+        # 多 selector 用逗号拆,挨个试
+        for sel in [s.strip() for s in selector.split(',') if s.strip()]:
+            try:
+                # set_input_files 对 hidden input 也工作
+                self._page.set_input_files(sel, paths, timeout=5000)
+                return True
+            except Exception:
+                continue
+        return False
+
+    def upload_txt(self, text: str, file_name: str = "script.txt",
+                   upload_selector: str = "") -> bool:
+        """把文本写成 .txt 文件 + 注入到 file input(用户反馈:长 prompt 走 TXT 附件)。
+
+        - utf-8 + BOM(防 GPT 中文乱码)
+        - 临时文件存到 downloads_dir 下 _uploads/
+        - 调 set_input_files 注入
+        """
+        if not self._page: return False
+        upload_root = self.downloads_dir / "_uploads"
+        upload_root.mkdir(parents=True, exist_ok=True)
+        target = upload_root / file_name
+        try:
+            # \ufeff = UTF-8 BOM,确保 GPT 正确识别中文
+            target.write_text("\ufeff" + text, encoding="utf-8")
+        except Exception:
+            return False
+        if not upload_selector:
+            upload_selector = (
+                '#upload-files, '
+                'input[type="file"][multiple], '
+                'input[type="file"]'
+            )
+        return self.set_input_files(upload_selector, [target])
+
     def is_logged_in(self, cookie_names: list) -> bool:
         if not self._ctx: return False
         try:

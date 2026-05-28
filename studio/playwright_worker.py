@@ -212,29 +212,66 @@ class Worker(QObject):
                     q.mark_failed(task.id, "60 秒未完成登录")
                     return
 
-            # 5. 填 prompt
-            if profile.input_box:
+            # 5. 填 prompt — 长 prompt 自动走 TXT 附件(用户反馈 GPT 镜像吃不下大段)
+            threshold = getattr(profile, "txt_upload_threshold", 4000)
+            prompt_len = len(task.prompt or "")
+            use_txt_mode = (threshold > 0 and prompt_len > threshold and
+                           profile.upload_btn)
+
+            if use_txt_mode:
+                # TXT 模式:写 .txt 文件 + 注入 file input + 输入框写短指令
+                self.log.emit(
+                    f"[{task.title}] prompt 长度 {prompt_len} > {threshold},"
+                    f"改用 TXT 附件上传(避免 GPT 截断)"
+                )
+                # 文件名带 task id 便于追踪
+                fname = f"prompt_{task.id[:12]}.txt"
+                upload_ok = session.upload_txt(
+                    task.prompt, file_name=fname,
+                    upload_selector=profile.upload_btn,
+                )
+                if upload_ok:
+                    self.log.emit(f"[{task.title}] TXT 附件上传完成")
+                    # 等附件预览出现(确认 GPT 收到了)
+                    try:
+                        page = session.page()
+                        if page:
+                            page.wait_for_selector(
+                                '[data-testid*="file-preview"], [data-testid*="attachment"], '
+                                '[class*="attachment"], [class*="filePreview"], '
+                                '[class*="upload-preview"]',
+                                timeout=8000
+                            )
+                    except Exception: pass
+                    # 输入框写短指令
+                    instruction = getattr(profile, "txt_upload_instruction",
+                                          "请严格按附件 TXT 里的内容执行任务。")
+                    if profile.input_box:
+                        session.fill_clipboard_paste(profile.input_box, instruction)
+                else:
+                    self.log.emit(f"[{task.title}] TXT 上传失败,退化到直接填 prompt")
+                    if profile.input_box:
+                        session.fill_clipboard_paste(profile.input_box, task.prompt)
+                        self._copy_to_clipboard(task.prompt)
+            elif profile.input_box:
+                # 普通模式:直接填 prompt
                 ok = session.fill_clipboard_paste(profile.input_box, task.prompt)
                 if not ok:
                     self.log.emit(f"[{task.title}] 自动填 prompt 失败,请在浏览器手动粘贴(已在剪贴板)")
-                    # fallback: 把 prompt 拷到剪贴板
                     self._copy_to_clipboard(task.prompt)
                 else:
-                    self.log.emit(f"[{task.title}] 已自动填入 prompt")
+                    self.log.emit(f"[{task.title}] 已自动填入 prompt ({prompt_len} 字)")
 
-            # 6. 上传参考图(如果有)
+            # 6. 上传参考图(若有)— 用 set_input_files 直接注入,避开 file chooser 浮窗
             if task.reference_images and profile.upload_btn:
                 try:
-                    page = session.page()
-                    if page:
-                        # 通常 click 触发 file chooser
-                        with page.expect_file_chooser() as fc_info:
-                            session.click(profile.upload_btn)
-                        fc = fc_info.value
-                        fc.set_files(task.reference_images)
+                    ok = session.set_input_files(profile.upload_btn, task.reference_images)
+                    if ok:
                         self.log.emit(f"[{task.title}] 已上传 {len(task.reference_images)} 张参考图")
+                    else:
+                        self.log.emit(f"[{task.title}] 自动上传失败,请手动")
                 except Exception as e:
-                    self.log.emit(f"[{task.title}] 自动上传失败 ({e}),请手动")
+                    self.log.emit(f"[{task.title}] 自动上传异常 ({e}),请手动")
 
             # 7. 进入 awaiting 模式
             q.mark_awaiting(task.id)
@@ -263,12 +300,23 @@ class Worker(QObject):
                 return
 
             # 7b. 图片/视频任务:三层 fallback 取产物
+            #   层 0(预等): completion_text_marker 出现(中文 GPT 出"图片已创建")
             #   层 1: 配了 download_btn → page.expect_download() + 自动点击
             #   层 2: 配了 result_image_in / result_video_in → 直接抓图片 src 用 requests 下载
             #   层 3: 啥都没配 → 监听 Downloads 目录(等用户手动右键保存)
             self.log.emit(f"[{task.title}] 等生成完成 + 取产物...")
             session_downloads = session.downloads_dir
             os_downloads = self._guess_os_downloads()
+
+            # 层 0: 等明确的"生成完成"文本(乔大仙的'图片已创建'检测术,只适用于图片任务)
+            marker = getattr(profile, "completion_text_marker", "") or ""
+            if marker and task.task_type != TASK_TYPE_VIDEO:
+                try:
+                    markers = [m.strip() for m in marker.split("||") if m.strip()]
+                    hit = self._wait_for_text_marker(session, markers, timeout=300)
+                    if hit:
+                        self.log.emit(f"[{task.title}] 命中完成标志:'{hit}'")
+                except Exception: pass
 
             found_file = None
 
@@ -471,6 +519,30 @@ class Worker(QObject):
                     return
 
     # ============ M3.5: AI 聊天任务的 DOM 抓取 + JSON 反解 ============
+
+    def _wait_for_text_marker(self, session, markers: list, timeout: int = 300) -> str:
+        """轮询 body innerText,等任一标志出现。返回命中的标志,超时返回 ''。
+
+        用于检测 GPT 镜像的'图片已创建'等生成完成强信号。
+        """
+        page = session.page() if session else None
+        if not page or not markers: return ""
+        deadline = time.time() + timeout
+        last_count = 0
+        while time.time() < deadline:
+            if not self._running: return ""
+            self._poll_control_queue()
+            try:
+                text = page.evaluate("() => document.body.innerText") or ""
+                for m in markers:
+                    if m and m in text:
+                        return m
+                # 进度日志(可选):每 10 次轮询打一次提示文本变化
+                if len(text) != last_count and (time.time() - deadline + timeout) % 10 < 1:
+                    last_count = len(text)
+            except Exception: pass
+            time.sleep(1.0)
+        return ""
 
     def _wait_for_chat_response(self, session, profile, timeout: int = 300) -> str:
         """轮询 DOM 等 GPT 回复 + 稳定。

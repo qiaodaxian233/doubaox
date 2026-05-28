@@ -39,22 +39,64 @@ class SiteProfile:
     needs_login: bool = True
     supports_image: bool = False
     supports_video: bool = False
+    # TXT 上传(用户反馈:GPT 镜像偶尔吃不下大段 prompt,得改用 TXT 附件)
+    # 字符阈值:prompt 超过这个长度 → 自动改用 TXT 附件 + 短指令
+    # 设为 0 = 永不走 TXT;默认 4000 对中文剧本够用
+    txt_upload_threshold: int = 4000
+    # TXT 附件触发后的占位指令(写到输入框,告诉 GPT 看 TXT 附件)
+    txt_upload_instruction: str = "请严格按附件 TXT 里的内容执行任务。"
+    # 生成完成的文本标志(中文 GPT 镜像通常出 "图片已创建" 三字)
+    # 用 || 分隔多个候选(任一出现即视为完成)
+    completion_text_marker: str = ""
 
 
-# === 默认配置(provisional;实际 DOM 需用 DevTools 探查) ===
-# 三个 backend 的初版配置。配置错没事 — worker 会退化到半自动模式。
+# === 默认配置 ===
+# GPT 镜像 selectors 来源:乔大仙 v6.3.0 user script(实战验证过)
+# 即梦 / 豆包 仍是猜测,首次跑失败时用 DevTools 探查后写到
+# ~/.doubao-studio/site_profiles.json 覆盖即可。
 
 DEFAULT_PROFILES: Dict[str, SiteProfile] = {
     "gpt-mirror": SiteProfile(
         backend_id="gpt-mirror",
         home_url="https://gpt.aimonkey.plus/",
-        auth_cookies=["session", "session_token", "_gpt_session"],
-        # 这些选择器是猜的,SPA 用 DevTools 探查
-        input_box='textarea, [contenteditable="true"]',
-        upload_btn='input[type="file"]',
-        send_btn='button[type="submit"], button:has(svg)',
-        result_selector='[class*="message"]:last-child, [class*="assistant"]:last-child',
-        result_image_in='img[src*="aimonkey"], img[src*="openai"], img[src^="http"]',
+        auth_cookies=["session", "__Secure-next-auth.session-token", "cf_clearance"],
+        # 多 selector fallback chain — 任何一个命中就行
+        # 输入框:#prompt-textarea 是 ChatGPT 标准,后面是国内镜像变种
+        input_box=(
+            '#prompt-textarea, '
+            'textarea[data-id="root"], '
+            '[contenteditable="true"][data-testid], '
+            '[contenteditable="true"], '
+            'textarea'
+        ),
+        # 文件上传 input — GPT 用 #upload-files,镜像各种
+        upload_btn=(
+            '#upload-files, '
+            'input[type="file"][multiple], '
+            'input[type="file"]:not([accept]), '
+            'input[type="file"][accept*="image"], '
+            'input[type="file"]'
+        ),
+        # 发送按钮多种变种
+        send_btn=(
+            '[data-testid="send-button"], '
+            'button[aria-label="Send message"], '
+            'button[aria-label="发送消息"], '
+            'button[aria-label="Send"], '
+            'button[data-testid="fruitjuice-send-button"]'
+        ),
+        # 生成完成标志:出现 assistant 消息块(role-message-author-role=assistant)
+        result_selector='[data-message-author-role="assistant"]',
+        # 生成图特征 — 三个 OpenAI CDN 域名(乔大仙 v6.3.0 验证)
+        result_image_in=(
+            'img[src*="oaidalleapiprodscus.blob.core.windows.net"], '
+            'img[src*="files.oaiusercontent.com"], '
+            'img[src*="oaistatics.com"], '
+            'img[src*="aimonkey"], '
+            'img[src*="openai"]'
+        ),
+        # 强信号:中文 GPT 镜像生成完成时会出 "图片已创建"
+        completion_text_marker="图片已创建||Image created||image generated",
         supports_image=True,
         supports_video=False,
     ),
@@ -62,18 +104,26 @@ DEFAULT_PROFILES: Dict[str, SiteProfile] = {
         backend_id="jimeng",
         home_url="https://jimeng.jianying.com/",
         auth_cookies=["sessionid", "sid_tt", "uid_tt"],
-        input_box='textarea',
-        send_btn='button:has-text("生成")',
-        result_image_in='img[src*="jimeng"], img[src*="ssl.bytedance"]',
+        input_box='textarea, [contenteditable="true"]',
+        upload_btn='input[type="file"][accept*="image"], input[type="file"]',
+        send_btn='button:has-text("生成"), button[class*="generate"]',
+        result_selector='[class*="result"], [class*="output"]',
+        result_image_in='img[src*="jimeng"], img[src*="ssl.bytedance"], img[src*="byteimg"]',
+        result_video_in='video[src*="jimeng"], video[src*="byteimg"]',
         supports_image=True,
-        supports_video=True,         # 即梦也能生视频
+        supports_video=True,
     ),
     "doubao": SiteProfile(
         backend_id="doubao",
         home_url="https://www.doubao.com/chat",
         auth_cookies=["sessionid", "sid_guard", "sid_tt"],
         input_box='textarea[data-testid="chat_input_input"], textarea',
-        upload_btn='button[data-testid*="upload"], input[type="file"]',
+        upload_btn=(
+            'input[type="file"][multiple], '
+            'input[type="file"]:not([accept]), '
+            'button[data-testid*="upload"], '
+            'input[type="file"]'
+        ),
         send_btn='button[data-testid="chat_input_send_button"]',
         result_selector='[data-testid*="message"][data-testid*="assistant"]',
         result_video_in='video',
