@@ -1052,13 +1052,19 @@ class CanvasView(QGraphicsView):
             if isinstance(node, TextNode):
                 self.node_action.emit("edit_text", node.kind, node.node_id)
             elif isinstance(node, GeneratorNode):
-                # 已完成的图片 → 看大图浏览;否则 → 编辑/重生
                 ci = node.canvas_item
-                if (ci.status == "done" and ci.result_file
-                        and ci.kind in (CANVAS_IMAGE, CANVAS_GENERATOR)
-                        and ci.task_type != "video"):
+                is_done = (ci.status == "done" and ci.result_file)
+                if is_done and ci.task_type == "video":
+                    # 视频:外部播放器(跟资源库 VideoNode 双击一致)
+                    self.node_action.emit("open_external", node.kind, node.node_id)
+                elif is_done and ci.task_type != "video":
+                    # 图片:大图预览
                     self.node_action.emit("preview_image", node.kind, node.node_id)
+                elif ci.prompt == "(本地上传)":
+                    # 上传的还没显示出图(罕见 race condition)→ 重命名而不是编辑
+                    self.node_action.emit("rename_node", node.kind, node.node_id)
                 else:
+                    # queued / running / failed → 走编辑/重生成
                     self.node_action.emit("edit_generator", node.kind, node.node_id)
             elif isinstance(node, VideoNode):
                 node.open_external()
@@ -1096,14 +1102,26 @@ class CanvasView(QGraphicsView):
             menu.addAction("🗑 隐藏此视频节点",
                           lambda: self.node_action.emit("delete", node.kind, node.node_id))
         elif isinstance(node, GeneratorNode):
-            # 已完成的图片节点:加'看大图'入口(双击也走这条)
             ci = node.canvas_item
-            if (ci.status == "done" and ci.result_file
-                    and ci.task_type != "video"):
+            is_uploaded = (ci.prompt == "(本地上传)")
+            is_video = (ci.task_type == "video")
+            is_done = (ci.status == "done" and ci.result_file)
+            # 重命名永远在最上(任何节点都该能改名)
+            menu.addAction("✏ 重命名",
+                          lambda: self.node_action.emit("rename_node", node.kind, node.node_id))
+            if is_done and not is_video:
                 menu.addAction("🔍 看大图 (双击同效)",
                               lambda: self.node_action.emit("preview_image", node.kind, node.node_id))
-            menu.addAction("✎ 编辑 / 重新生成",
-                          lambda: self.node_action.emit("edit_generator", node.kind, node.node_id))
+            if is_done and is_video:
+                menu.addAction("▶ 用系统播放器打开",
+                              lambda: self.node_action.emit("open_external", node.kind, node.node_id))
+            # 上传的图片/视频:再生成没意义(prompt 是占位 '(本地上传)')— 改成'替换文件'
+            if is_uploaded:
+                menu.addAction("🔁 替换源文件...",
+                              lambda: self.node_action.emit("replace_upload", node.kind, node.node_id))
+            else:
+                menu.addAction("✎ 编辑 / 重新生成",
+                              lambda: self.node_action.emit("edit_generator", node.kind, node.node_id))
             menu.addSeparator()
             menu.addAction("🗑 删除",
                           lambda: self.node_action.emit("delete", node.kind, node.node_id))
@@ -1678,6 +1696,65 @@ class InfiniteCanvasView(QFrame):
                 QApplication.clipboard().setText(str(node.video_path.absolute()))
                 self.log.emit(f"已复制路径: {node.video_path.name}")
             return
+        if action == "rename_node":
+            # 改 GeneratorNode 标题(不触发再生成)
+            node = self.canvas._nodes_by_id.get(node_id)
+            if not isinstance(node, GeneratorNode): return
+            cur = node.canvas_item.title or ""
+            new_title, ok = QInputDialog.getText(
+                self, "重命名", "新名称:", text=cur
+            )
+            if not ok: return
+            node.canvas_item.title = new_title.strip()
+            node._render()
+            self.canvas.dirty_changed.emit()  # autosave 接管
+            self.log.emit(f"已重命名: {cur or '(无)'} → {new_title.strip() or '(无)'}")
+            return
+        if action == "replace_upload":
+            # 上传节点换源文件(保留 id / 连线 / 位置 / 名字)
+            node = self.canvas._nodes_by_id.get(node_id)
+            if not isinstance(node, GeneratorNode): return
+            ci = node.canvas_item
+            is_video = (ci.task_type == "video")
+            filt = ("视频 (*.mp4 *.mov *.webm *.avi *.mkv)" if is_video
+                    else "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp)")
+            fp, _ = QFileDialog.getOpenFileName(
+                self, "选新源文件", "", filt + ";;所有 (*)"
+            )
+            if not fp: return
+            from pathlib import Path
+            try:
+                rel = ST.import_asset(self.pid, Path(fp))
+                if not rel:
+                    self.log.emit("⚠ 替换失败:import_asset 没返回路径"); return
+                ci.result_file = rel
+                ci.status = "done"
+                ci.error = ""
+                # 标题没改过(还是默认上传名)→ 自动用新文件名
+                if (not ci.title) or (ci.title == Path(ci.result_file).stem) or ci.title == "(本地上传)":
+                    ci.title = Path(fp).stem[:30]
+                node._render()
+                self.canvas.dirty_changed.emit()
+                self.log.emit(f"已替换源文件: {Path(fp).name}")
+            except Exception as e:
+                self.log.emit(f"替换源文件失败: {e}")
+            return
+        if action == "open_external":
+            # done 视频用系统播放器开
+            node = self.canvas._nodes_by_id.get(node_id)
+            if not isinstance(node, GeneratorNode): return
+            ci = node.canvas_item
+            if not (ci.status == "done" and ci.result_file): return
+            full = ST.asset_full_path(self.pid, ci.result_file)
+            if not full.exists():
+                self.log.emit(f"⚠ 文件不存在: {ci.result_file}"); return
+            try:
+                from PySide6.QtGui import QDesktopServices
+                from PySide6.QtCore import QUrl
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(full.absolute())))
+            except Exception as e:
+                self.log.emit(f"系统播放器打开失败: {e}")
+            return
         if action == "preview_image":
             # 收集画布上所有已完成图片节点,做成 (title, abs_path) 列表
             items = []
@@ -1715,9 +1792,27 @@ class InfiniteCanvasView(QFrame):
                 if node.canvas_item.status in ("queued", "running"):
                     self.log.emit("正在生成中,稍候")
                     return
+                # 记一下编辑前的关键字段,用来判断用户是不是只改了标题
+                old_prompt = node.canvas_item.prompt
+                old_backend = node.canvas_item.backend_id
+                old_type = node.canvas_item.task_type
                 dlg = GeneratorDialog(self, node.canvas_item)
                 if dlg.exec() != QDialog.DialogCode.Accepted: return
                 item = dlg.commit()
+                # 上传节点的保护:prompt 还是占位'(本地上传)',表示用户没真打算重新生成
+                # —— 把已上传的 result_file 清掉再去 GPT 生成"(本地上传)"是个 trap,堵住
+                if item.prompt == "(本地上传)":
+                    node._render()  # 标题/类型可能改了 — 刷一下显示就好
+                    self.canvas.dirty_changed.emit()
+                    self.log.emit("上传节点 — 只保存了元数据(没再触发生成)")
+                    return
+                # 用户什么实质性字段都没改 → 没必要再花一次配额跑一遍
+                if (item.prompt == old_prompt and item.backend_id == old_backend
+                        and item.task_type == old_type and node.canvas_item.status == "done"):
+                    node._render()
+                    self.canvas.dirty_changed.emit()
+                    self.log.emit("没改动 prompt/backend/类型 — 跳过重新生成")
+                    return
                 # 重新入队
                 from .task_queue import get_queue
                 from .playwright_worker import get_worker
