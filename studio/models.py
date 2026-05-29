@@ -136,6 +136,9 @@ class Shot:
     # 生成产物
     generated_image: str = ""           # 本镜静帧参考
     generated_video: str = ""           # 本镜独立小视频(可选)
+    # 末帧衔接:本镜视频生成完后由 worker 用 ffmpeg 抽末帧存到这里,
+    # 下一镜入队时自动作为首帧参考喂给 seedance,保证跨镜画面连续
+    last_frame_image: str = ""
 
 
 @dataclass
@@ -178,6 +181,9 @@ class VideoSegment:
     generated_by_account: str = ""      # 哪个账号生成的
     generated_at: float = 0.0
     duration: float = 10.0              # 硬上限 10s
+    # 末帧衔接:本段视频生成完后由 worker 用 ffmpeg 抽末帧存到这里,
+    # 下一段入队时自动作为首帧参考喂给 seedance
+    last_frame_image: str = ""
 
     def shot_count(self) -> int:
         return len(self.shot_ids)

@@ -794,6 +794,62 @@ class Worker(QObject):
         except Exception:
             return None
 
+    def _extract_last_frame(self, pid: str, video_rel: str,
+                            target_stem: str) -> str:
+        """从已归档的视频抽末帧,保存到 project assets/,返回相对路径。
+        失败返回空字符串。用于'末帧→下一段首帧'跨镜衔接。"""
+        import shutil, subprocess
+        if not shutil.which("ffmpeg"):
+            self.log.emit("⚠ ffmpeg 不在 PATH 里,跳过末帧抽取(下一镜不会自动衔接)")
+            return ""
+        try:
+            video_full = ST.asset_full_path(pid, video_rel)
+            if not video_full or not video_full.exists():
+                return ""
+            # 写到临时位置,然后 import_asset 进 assets/ 走归档+重名避让
+            tmp_dir = ST.project_dir(pid) / "_tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp = tmp_dir / f"{target_stem}.jpg"
+            # -sseof -0.1:seek 到末尾前 0.1s,抽 1 帧
+            # 注意 -sseof 必须放在 -i 前,Format 时间是相对文件尾的负数
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-sseof", "-0.1", "-i", str(video_full),
+                 "-vframes", "1", "-q:v", "2", str(tmp)],
+                capture_output=True, timeout=15,
+            )
+            if result.returncode != 0 or not tmp.exists():
+                # 部分编码 -sseof 可能 seek 失败,退化到 -ss 末尾前 0.3s + duration
+                # 拿 duration 用 ffprobe(也是 ffmpeg 套件)
+                try:
+                    pr = subprocess.run(
+                        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                         "-of", "default=noprint_wrappers=1:nokey=1", str(video_full)],
+                        capture_output=True, timeout=5, text=True,
+                    )
+                    duration = float((pr.stdout or "0").strip() or 0)
+                except Exception:
+                    duration = 0
+                if duration > 0.5:
+                    seek = max(0.1, duration - 0.3)
+                    result2 = subprocess.run(
+                        ["ffmpeg", "-y", "-ss", f"{seek}", "-i", str(video_full),
+                         "-vframes", "1", "-q:v", "2", str(tmp)],
+                        capture_output=True, timeout=15,
+                    )
+                    if result2.returncode != 0 or not tmp.exists():
+                        self.log.emit(f"⚠ 末帧抽取失败 (ffmpeg 两次都不行)")
+                        return ""
+            # 归档进 assets/
+            rel = ST.import_asset(pid, tmp, target_name=f"{target_stem}.jpg")
+            try: tmp.unlink()
+            except Exception: pass
+            if rel:
+                self.log.emit(f"  ↳ 末帧已抽出: {rel}(供下一镜首帧参考)")
+            return rel
+        except Exception as e:
+            self.log.emit(f"⚠ 末帧抽取异常: {e}")
+            return ""
+
     def _guess_os_downloads(self) -> Path:
         from .downloads_watcher import default_downloads_dir
         return default_downloads_dir()
@@ -866,6 +922,11 @@ class Worker(QObject):
                     if shot.id == task.target_id:
                         if task.task_type == TASK_TYPE_VIDEO:
                             shot.generated_video = asset_rel
+                            # 抽末帧 — 给下一镜当首帧参考(跨镜连续性)
+                            lf = self._extract_last_frame(pid, asset_rel,
+                                                          f"lastframe_shot_{shot.id}")
+                            if lf:
+                                shot.last_frame_image = lf
                         else:
                             shot.generated_image = asset_rel
                         ST.save_episode(pid, ep)
@@ -876,6 +937,10 @@ class Worker(QObject):
                     if seg.id == task.target_id:
                         if task.task_type == TASK_TYPE_VIDEO:
                             seg.generated_video = asset_rel
+                            lf = self._extract_last_frame(pid, asset_rel,
+                                                          f"lastframe_seg_{seg.id}")
+                            if lf:
+                                seg.last_frame_image = lf
                         else:
                             seg.storyboard_image = asset_rel
                         ST.save_episode(pid, ep)

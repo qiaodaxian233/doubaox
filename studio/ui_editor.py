@@ -1504,8 +1504,18 @@ class EpisodesView(QFrame):
 
     def _gen_shot_video(self, shot: Shot):
         text = self._build_video_prompt(shot)
-        # 如果本镜已有参考图,自动作为上传的图传给豆包
+        # 收集参考图,顺序:
+        # 1. 上一镜的末帧(首帧锚点 — seedance 把第一张当 first-frame ref)
+        # 2. 本镜的静帧参考(generated_image — 角色/构图基线)
         refs = []
+        prev_shot = self._find_prev_shot_in_episode(shot)
+        if prev_shot and prev_shot.last_frame_image:
+            p = ST.asset_full_path(self.pid, prev_shot.last_frame_image)
+            if p.exists():
+                refs.append(str(p))
+                self.log.emit(
+                    f"↳ 衔接:取上一镜 #{prev_shot.number} 末帧作首帧参考"
+                )
         if shot.generated_image:
             p = ST.asset_full_path(self.pid, shot.generated_image)
             if p.exists(): refs.append(str(p))
@@ -1518,6 +1528,20 @@ class EpisodesView(QFrame):
             reference_images=refs,
         )
         self.log.emit(f"{msg} — 分镜 #{shot.number} 视频 (参考图 {len(refs)})")
+
+    def _find_prev_shot_in_episode(self, shot: Shot):
+        """按 shot.number 在 shot 所在 episode 里找上一镜(number-1)。
+        找不到返回 None。"""
+        if not shot.episode_id or shot.number <= 1:
+            return None
+        for ep in ST.list_episodes(self.pid):
+            if ep.id != shot.episode_id: continue
+            target_num = shot.number - 1
+            # number-1 不一定真的存在(用户可能跳号删过),取小于本镜的最大 number
+            candidates = [s for s in ep.shots if s.number < shot.number]
+            if not candidates: return None
+            return max(candidates, key=lambda s: s.number)
+        return None
 
     # ==================== 故事板大图(蒙哥实战格式 · 用本镜作锚点) ====================
     def _build_storyboard_master_prompt(self, shot: Shot) -> tuple:

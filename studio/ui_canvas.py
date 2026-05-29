@@ -708,6 +708,174 @@ class GeneratorDialog(QDialog):
 
 
 # =========================================================================
+class ImagePreviewDialog(QDialog):
+    """节点大图预览对话框 — 全屏看图,左右键浏览同画布上所有 done 图节点。
+
+    传入:
+      paths:  按显示顺序的 (title, abs_path_to_image) 列表
+      start:  初始打开第几张(index)
+    交互:
+      ← / →:  上一张/下一张
+      ESC:     关闭
+      鼠标滚轮: 缩放(适配窗口的相对比例)
+    """
+
+    def __init__(self, parent, items, start_idx: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle("图片预览")
+        # 启用最大化
+        try:
+            from PySide6.QtCore import Qt as _Qt
+            self.setWindowFlags(self.windowFlags() | _Qt.WindowMaximizeButtonHint)
+        except Exception: pass
+        self.resize(1280, 800)
+        self._items = items  # list of (title, abs_path)
+        self._idx = max(0, min(start_idx, len(items) - 1))
+        self._scale_factor = 1.0  # 用户滚轮缩放(在 fit 的基础上再乘)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        # 标题栏
+        title_row = QHBoxLayout()
+        self._title_label = QLabel("")
+        self._title_label.setStyleSheet("font-size: 14px; font-weight: 500;")
+        title_row.addWidget(self._title_label, 1)
+        self._counter_label = QLabel("")
+        self._counter_label.setStyleSheet("color: #888; font-size: 12px;")
+        title_row.addWidget(self._counter_label)
+        root.addLayout(title_row)
+
+        # 图片区
+        self._image_label = QLabel("(加载中…)")
+        self._image_label.setAlignment(Qt.AlignCenter)
+        self._image_label.setStyleSheet("background: #1a1a1a; color: #ccc; border-radius: 8px;")
+        self._image_label.setMinimumSize(800, 500)
+        self._image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        root.addWidget(self._image_label, 1)
+
+        # 底部工具栏
+        bottom = QHBoxLayout()
+        self._prev_btn = QPushButton("← 上一张")
+        self._prev_btn.clicked.connect(self._prev)
+        bottom.addWidget(self._prev_btn)
+        self._next_btn = QPushButton("下一张 →")
+        self._next_btn.clicked.connect(self._next)
+        bottom.addWidget(self._next_btn)
+        bottom.addStretch()
+        zoom_out = QPushButton("－"); zoom_out.setMaximumWidth(40)
+        zoom_out.clicked.connect(lambda: self._zoom(0.8))
+        bottom.addWidget(zoom_out)
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setMinimumWidth(50)
+        self._zoom_label.setAlignment(Qt.AlignCenter)
+        bottom.addWidget(self._zoom_label)
+        zoom_in = QPushButton("＋"); zoom_in.setMaximumWidth(40)
+        zoom_in.clicked.connect(lambda: self._zoom(1.25))
+        bottom.addWidget(zoom_in)
+        fit_btn = QPushButton("适配窗口")
+        fit_btn.clicked.connect(self._reset_zoom)
+        bottom.addWidget(fit_btn)
+        bottom.addStretch()
+        open_btn = QPushButton("🗂 在文件夹中显示")
+        open_btn.clicked.connect(self._reveal_in_folder)
+        bottom.addWidget(open_btn)
+        close_btn = QPushButton("关闭 (Esc)")
+        close_btn.clicked.connect(self.accept)
+        bottom.addWidget(close_btn)
+        root.addLayout(bottom)
+
+        # 当前图缓存
+        self._current_pixmap: Optional[QPixmap] = None
+        self._load_current()
+
+    def _load_current(self):
+        if not self._items: return
+        title, path = self._items[self._idx]
+        self._title_label.setText(title or Path(path).name)
+        self._counter_label.setText(f"{self._idx + 1} / {len(self._items)}")
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self._current_pixmap = None
+            self._image_label.setText(f"(无法加载: {path})")
+        else:
+            self._current_pixmap = pix
+            self._scale_factor = 1.0
+            self._redraw()
+        # prev/next 禁用边界
+        self._prev_btn.setEnabled(self._idx > 0)
+        self._next_btn.setEnabled(self._idx < len(self._items) - 1)
+
+    def _redraw(self):
+        if not self._current_pixmap: return
+        avail = self._image_label.size()
+        # 先 fit 到容器,再乘用户的缩放
+        fitted = self._current_pixmap.scaled(
+            avail, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        if abs(self._scale_factor - 1.0) > 0.001:
+            target = fitted.size() * self._scale_factor
+            fitted = self._current_pixmap.scaled(
+                target, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        self._image_label.setPixmap(fitted)
+        self._zoom_label.setText(f"{int(self._scale_factor * 100)}%")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._redraw()
+
+    def _prev(self):
+        if self._idx > 0:
+            self._idx -= 1
+            self._load_current()
+
+    def _next(self):
+        if self._idx < len(self._items) - 1:
+            self._idx += 1
+            self._load_current()
+
+    def _zoom(self, factor: float):
+        self._scale_factor = max(0.1, min(8.0, self._scale_factor * factor))
+        self._redraw()
+
+    def _reset_zoom(self):
+        self._scale_factor = 1.0
+        self._redraw()
+
+    def _reveal_in_folder(self):
+        if not self._items: return
+        path = Path(self._items[self._idx][1])
+        if not path.exists(): return
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Left:
+            self._prev(); return
+        if e.key() == Qt.Key_Right:
+            self._next(); return
+        if e.key() == Qt.Key_Escape:
+            self.accept(); return
+        super().keyPressEvent(e)
+
+    def wheelEvent(self, e):
+        # ctrl+滚轮 = 缩放;普通滚轮 = 翻页
+        if e.modifiers() & Qt.ControlModifier:
+            delta = e.angleDelta().y()
+            self._zoom(1.2 if delta > 0 else 0.8333)
+        else:
+            delta = e.angleDelta().y()
+            if delta > 0:
+                self._prev()
+            elif delta < 0:
+                self._next()
+        e.accept()
+
+
+# =========================================================================
 class CanvasView(QGraphicsView):
     """画布视图本体。"""
 
@@ -884,7 +1052,14 @@ class CanvasView(QGraphicsView):
             if isinstance(node, TextNode):
                 self.node_action.emit("edit_text", node.kind, node.node_id)
             elif isinstance(node, GeneratorNode):
-                self.node_action.emit("edit_generator", node.kind, node.node_id)
+                # 已完成的图片 → 看大图浏览;否则 → 编辑/重生
+                ci = node.canvas_item
+                if (ci.status == "done" and ci.result_file
+                        and ci.kind in (CANVAS_IMAGE, CANVAS_GENERATOR)
+                        and ci.task_type != "video"):
+                    self.node_action.emit("preview_image", node.kind, node.node_id)
+                else:
+                    self.node_action.emit("edit_generator", node.kind, node.node_id)
             elif isinstance(node, VideoNode):
                 node.open_external()
             else:
@@ -921,6 +1096,12 @@ class CanvasView(QGraphicsView):
             menu.addAction("🗑 隐藏此视频节点",
                           lambda: self.node_action.emit("delete", node.kind, node.node_id))
         elif isinstance(node, GeneratorNode):
+            # 已完成的图片节点:加'看大图'入口(双击也走这条)
+            ci = node.canvas_item
+            if (ci.status == "done" and ci.result_file
+                    and ci.task_type != "video"):
+                menu.addAction("🔍 看大图 (双击同效)",
+                              lambda: self.node_action.emit("preview_image", node.kind, node.node_id))
             menu.addAction("✎ 编辑 / 重新生成",
                           lambda: self.node_action.emit("edit_generator", node.kind, node.node_id))
             menu.addSeparator()
@@ -1496,6 +1677,27 @@ class InfiniteCanvasView(QFrame):
             if isinstance(node, VideoNode):
                 QApplication.clipboard().setText(str(node.video_path.absolute()))
                 self.log.emit(f"已复制路径: {node.video_path.name}")
+            return
+        if action == "preview_image":
+            # 收集画布上所有已完成图片节点,做成 (title, abs_path) 列表
+            items = []
+            target_idx = 0
+            for n in self.canvas._nodes_by_id.values():
+                if not isinstance(n, GeneratorNode): continue
+                ci = n.canvas_item
+                if not (ci.status == "done" and ci.result_file
+                        and ci.task_type != "video"):
+                    continue
+                p = ST.asset_full_path(self.pid, ci.result_file)
+                if not p.exists(): continue
+                title = ci.title or Path(ci.result_file).name
+                if n.node_id == node_id:
+                    target_idx = len(items)
+                items.append((title, str(p)))
+            if not items:
+                self.log.emit("没有可预览的图片"); return
+            dlg = ImagePreviewDialog(self, items, start_idx=target_idx)
+            dlg.exec()
             return
         if action == "edit_text":
             node = self.canvas._nodes_by_id.get(node_id)
