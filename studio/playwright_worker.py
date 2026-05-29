@@ -1043,9 +1043,65 @@ class Worker(QObject):
           - episode: 拆分镜回写(M3.5)
           - character_facescan: 看图识别五官 → 回填 Character 结构化字段
           - document_parse: 整篇剧本文档解析 → 批量创建 Characters / Scenes / Episodes
+          - episode_continue: 续写下一集 → 创建新 Episode + 追加世界圣经
         """
         from .models import Shot, VideoSegment
         pid = task.project_id
+
+        # ---- 续写下一集:创建新 Episode + 追加世界圣经'已发生事件' ----
+        if task.target_kind == "episode_continue":
+            if not isinstance(parsed, dict):
+                self.log.emit(f"[{task.title}] 解析的不是 dict,跳过")
+                return
+            from .models import Episode
+            eps = ST.list_episodes(pid)
+            next_num = (max([e.number for e in eps], default=0)) + 1
+            title = (parsed.get("title") or f"第 {next_num} 集").strip()
+            new_ep = Episode(
+                project_id=pid,
+                number=next_num,
+                title=title,
+                synopsis=(parsed.get("synopsis") or "").strip(),
+                emotional_arc=(parsed.get("emotional_arc") or "").strip(),
+                script=(parsed.get("script") or "").strip(),
+            )
+            ST.save_episode(pid, new_ep)
+            # 把 world_updates 追加到 world_bible '已发生事件' 区段
+            updates = (parsed.get("world_updates") or "").strip()
+            cliff = (parsed.get("cliffhanger") or "").strip()
+            if updates or cliff:
+                try:
+                    wb = ST.load_world_bible(pid)
+                    append = [f"\n\n### 第 {next_num} 集 · {title}"]
+                    if updates:
+                        for line in updates.split("\n"):
+                            line = line.strip()
+                            if line: append.append(f"- {line}")
+                    if cliff:
+                        append.append(f"- 🪝 本集勾子:{cliff}")
+                    # 插入到 '已发生事件' 章节后面;找不到就追加到文末
+                    marker = "## 📜 时间线 / 已发生事件"
+                    appended = "\n".join(append)
+                    if marker in wb:
+                        # 插到下一个 ## 章节之前(找下一个 \n## 位置)
+                        head = wb.split(marker, 1)
+                        rest = head[1]
+                        next_section = rest.find("\n## ")
+                        if next_section >= 0:
+                            wb = (head[0] + marker + rest[:next_section]
+                                  + appended + "\n" + rest[next_section:])
+                        else:
+                            wb = head[0] + marker + rest + appended
+                    else:
+                        wb = wb + f"\n\n## 📜 时间线 / 已发生事件{appended}\n"
+                    ST.save_world_bible(pid, wb)
+                except Exception as e:
+                    self.log.emit(f"[{task.title}] 写回世界圣经失败: {e}")
+            self.log.emit(
+                f"[{task.title}] ✅ 第 {next_num} 集已创建:{title}。"
+                f"下一步打开本集点 '🧠 AI 拆分镜' 拆出分镜表。"
+            )
+            return
 
         # ---- 整篇剧本文档解析:批量创建素材 ----
         if task.target_kind == "document_parse":

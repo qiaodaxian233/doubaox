@@ -226,6 +226,106 @@ class AISplitDialog(QDialog):
         return self.script.toPlainText(), self.seg_count.value(), self.shots_per_seg.value()
 
 
+class ContinueEpisodeDialog(QDialog):
+    """续写下一集 — 收集用户对本集的方向意图和'不能揭露什么'。"""
+
+    def __init__(self, parent=None, pid: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("📖 续写下一集")
+        self.setMinimumWidth(640)
+        self.pid = pid
+
+        l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 18); l.setSpacing(12)
+
+        title = QLabel("续写下一集 — 电影级连续剧模式")
+        title.setStyleSheet("font-size: 16px; font-weight: 500;")
+        l.addWidget(title)
+
+        # 已完成集 + 配额预览
+        from . import storage as ST
+        eps = ST.list_episodes(pid) if pid else []
+        next_num = (max([e.number for e in eps], default=0)) + 1
+
+        try:
+            accs = [a for a in ST.load_accounts()
+                    if a.backend_id == "doubao" and getattr(a, "enabled", True)]
+            total_left = sum(
+                (a.daily_quota_total - (a.daily_quota_used or 0))
+                if not a.is_unlimited() else 999
+                for a in accs
+            )
+        except Exception:
+            total_left = 999
+
+        info = QLabel(
+            f"<b>项目已有 {len(eps)} 集</b>。即将生成第 <b>{next_num}</b> 集。<br>"
+            f"豆包账号今日剩余 <b>{total_left}</b> 段 ≈ "
+            f"<b>{total_left * 10}s</b> 视频额度。"
+        )
+        info.setStyleSheet(
+            "background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; "
+            "padding: 8px 12px; font-size: 12px;"
+        )
+        info.setWordWrap(True)
+        l.addWidget(info)
+
+        f = QFormLayout(); f.setSpacing(10)
+        # 时长目标 — 电影级 2-5 分钟,默认 120s
+        self.duration = QSpinBox()
+        self.duration.setRange(20, 600); self.duration.setValue(120); self.duration.setSingleStep(10)
+        self.duration.setSuffix(" 秒成片")
+        self.duration.setToolTip(
+            "电影级单集建议 60-300 秒。20s 是最短(约 2 段视频),"
+            "GPT 会按此目标确定本集应有多少 10s 段"
+        )
+        f.addRow("本集时长目标", self.duration)
+        l.addLayout(f)
+
+        l.addWidget(QLabel("🎯 本集走向意图(可空,空就让 GPT 顺着弧线推):"))
+        self.brief = QPlainTextEdit()
+        self.brief.setPlaceholderText(
+            "例如:\n"
+            "- 主角觉醒第二种法则,但代价是失去某段记忆\n"
+            "- 引入新势力 X,首脑出场,与主角发生冲突\n"
+            "- 节奏放缓,本集主要做角色 A 的回忆铺垫"
+        )
+        self.brief.setMinimumHeight(110)
+        l.addWidget(self.brief)
+
+        l.addWidget(QLabel("🚫 本集禁止揭露的悬念(可空,但建议明确写):"))
+        self.forbidden = QPlainTextEdit()
+        self.forbidden.setPlaceholderText(
+            "例如(每行一条):\n"
+            "- 主角真实身份(铺到第 8 集才揭)\n"
+            "- 反派 X 真正动机(第 5 集前装普通配角)\n"
+            "- 神器的最终力量(只在大结局展示)"
+        )
+        # 预填:从世界圣经里找 ⏳ 行
+        try:
+            wb = ST.load_world_bible(pid) if pid else ""
+            hints = [ln.strip() for ln in wb.split("\n")
+                     if ln.strip().startswith("- ⏳")]
+            if hints:
+                self.forbidden.setPlainText("\n".join(hints))
+        except Exception: pass
+        self.forbidden.setMinimumHeight(90)
+        l.addWidget(self.forbidden)
+
+        b = QDialogButtonBox()
+        b.addButton("取消", QDialogButtonBox.RejectRole)
+        ok = b.addButton("📖 派给 GPT 续写", QDialogButtonBox.AcceptRole)
+        ok.setObjectName("Primary")
+        b.accepted.connect(self.accept); b.rejected.connect(self.reject)
+        l.addWidget(b)
+
+    def get_result(self):
+        return (
+            self.brief.toPlainText().strip(),
+            self.forbidden.toPlainText().strip(),
+            self.duration.value(),
+        )
+
+
 # ==================== M4: 导出对话框 ====================
 class ExportDialog(QDialog):
     def __init__(self, parent=None, project_id="", episode=None):

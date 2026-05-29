@@ -291,6 +291,49 @@ DEFAULT_PROMPT_TEMPLATES = [
     ),
 
     PromptTemplate(
+        id="tpl-episode-continue",
+        category="拆分镜",
+        title="续写下一集剧本(给 GPT 用,基于世界圣经 + 已完成集)",
+        placeholders=["world_bible", "past_episodes", "user_brief",
+                      "forbidden_reveals", "target_duration_seconds",
+                      "next_ep_number"],
+        content=(
+            "你是一名顶级影视编剧。下面给你 ① 项目的世界圣经,② 已完成的前 N 集剧情摘要,"
+            "③ 用户对下一集的方向意图,④ 本集禁止揭露的关键悬念。\n"
+            "请根据这些写出**第 {next_ep_number} 集**的完整剧本。\n\n"
+            "**输出格式严格 JSON,只输出 JSON 代码块,不要任何前后文字:**\n"
+            "```json\n"
+            "{{\n"
+            '  "title": "第 N 集 · 副标题",\n'
+            '  "synopsis": "一句话本集梗概(给观众看的)",\n'
+            '  "emotional_arc": "本集情绪曲线,例:平静→焦灼→震惊→悬念",\n'
+            '  "script": "本集完整剧情文本(包含台词、动作、转场、留白)",\n'
+            '  "world_updates": "本集发生后,应当追加到世界圣经'
+            "'已发生事件'里的事实"
+            '(用 \\n 分行,每行一条;若没有新事实就空字符串)",\n'
+            '  "cliffhanger": "本集结尾的勾子/悬念(给下一集留的钩子,必须有)"\n'
+            "}}\n"
+            "```\n\n"
+            "**绝对硬约束:**\n"
+            "- 🚫 **以下悬念绝对不能在本集揭露**(未到时机):\n"
+            "  {forbidden_reveals}\n"
+            "- ✅ 本集必须**以悬念/勾子结尾**,不能闭合。观众必须想看下一集。\n"
+            "- ⚖️ 角色性格、外貌、能力必须严格符合世界圣经,**不要前后矛盾**。\n"
+            "- 📏 本集 script 文字目标长度对应 **{target_duration_seconds} 秒**成片,"
+            "即约 {target_duration_seconds} ÷ 10 = N 段 × 10s,每段 3-5 镜。\n"
+            "  → script 内**用 '【段 N】xxxxxx' 段落分隔**,段数 = 目标秒数 ÷ 10,"
+            "便于后续 AI 拆分镜自动按段切。\n"
+            "- 🎯 本集要推进至少一个角色弧或一个主线进展,不能纯灌水。\n"
+            "- 🎬 这是**电影级连续剧**,不是 15s 爽点短剧 — 节奏可以慢、可以铺、可以留白,"
+            "禁止'一集到底'这种短剧手法。\n\n"
+            "**① 世界圣经:**\n{world_bible}\n\n"
+            "**② 已完成集摘要:**\n{past_episodes}\n\n"
+            "**③ 用户对本集的方向意图(可空,空就你自己决定走向):**\n{user_brief}\n"
+        ),
+    ),
+
+
+    PromptTemplate(
         id="tpl-m3-doc-parse",
         category="拆分镜",
         title="整篇剧本文档解析(给 GPT 用,返回 JSON)",

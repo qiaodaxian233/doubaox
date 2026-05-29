@@ -103,6 +103,7 @@ class EditorPanel(QFrame):
 
         self.empty   = EmptyView()
         self.over    = OverviewView(self)
+        self.bible   = WorldBibleView(self)
         self.chars   = CharactersView(self)
         self.scenes  = ScenesView(self)
         self.props   = PropsView(self)
@@ -110,7 +111,7 @@ class EditorPanel(QFrame):
         from .ui_canvas import InfiniteCanvasView
         self.canvas  = InfiniteCanvasView(self)
 
-        for w in (self.empty, self.over, self.chars, self.scenes, self.props, self.eps, self.canvas):
+        for w in (self.empty, self.over, self.bible, self.chars, self.scenes, self.props, self.eps, self.canvas):
             self.stack.addWidget(w)
             if hasattr(w, "log"):
                 try: w.log.connect(self.log)
@@ -126,6 +127,7 @@ class EditorPanel(QFrame):
             return
         mapping = {
             "overview":   self.over,
+            "bible":      self.bible,
             "characters": self.chars,
             "scenes":     self.scenes,
             "props":      self.props,
@@ -489,6 +491,156 @@ class _AssetGridView(QFrame):
 
 
 # =========================================================================
+class WorldBibleView(QFrame):
+    """世界圣经 — 项目级 markdown 文档,所有续集生成都拉这份做上下文。"""
+    log = Signal(str)
+
+    def __init__(self, owner):
+        super().__init__()
+        self.setObjectName("PanelAlt")
+        self.owner = owner
+        self.pid: Optional[str] = None
+
+        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
+
+        # 顶栏
+        tb = QFrame(); tb.setObjectName("Panel")
+        tbl = QHBoxLayout(tb); tbl.setContentsMargins(28, 16, 28, 14); tbl.setSpacing(10)
+        title = QLabel("🌐 世界圣经"); title.setObjectName("H2")
+        tbl.addWidget(title)
+        sub = QLabel(" — 所有续集生成都会拉这份做上下文,写得越细后面集集越统一")
+        sub.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        tbl.addWidget(sub)
+        tbl.addStretch()
+
+        self._save_indicator = QLabel("")
+        self._save_indicator.setStyleSheet("color: #888; font-size: 12px; padding: 0 10px;")
+        tbl.addWidget(self._save_indicator)
+
+        save_btn = QPushButton("💾 立即保存"); save_btn.setObjectName("Subtle")
+        save_btn.clicked.connect(self._save_immediate)
+        tbl.addWidget(save_btn)
+
+        self.continue_btn = QPushButton("📖 续写下一集")
+        self.continue_btn.setObjectName("Primary")
+        self.continue_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.continue_btn.setToolTip(
+            "把这份世界圣经 + 已完成集摘要喂给 GPT,自动写下一集剧本\n"
+            "(以悬念结尾、不揭未到时机的密、节奏对齐电影级 2-5 分钟/集)"
+        )
+        self.continue_btn.clicked.connect(self._on_continue_episode)
+        tbl.addWidget(self.continue_btn)
+
+        root.addWidget(tb); root.addWidget(Hline())
+
+        # 编辑区
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("点 '💾 立即保存' 持久化;离开本页前也会自动保存")
+        f = self.editor.font()
+        try: f.setFamily("Microsoft YaHei UI,Segoe UI,Noto Sans CJK SC,sans-serif")
+        except Exception: pass
+        f.setPointSize(11)
+        self.editor.setFont(f)
+        self.editor.textChanged.connect(self._on_text_changed)
+
+        wrap = QFrame()
+        wl = QVBoxLayout(wrap); wl.setContentsMargins(36, 22, 36, 22)
+        wl.addWidget(self.editor, 1)
+        root.addWidget(wrap, 1)
+
+        # 2 秒 debounce 自动保存
+        from PySide6.QtCore import QTimer
+        self._save_timer = QTimer(self)
+        self._save_timer.setInterval(2000)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(self._save_now)
+        self._loading = False
+
+    def load(self, pid: str):
+        self.pid = pid
+        self._loading = True
+        try:
+            self.editor.setPlainText(ST.load_world_bible(pid))
+        finally:
+            self._loading = False
+        self._save_indicator.setText("💾 已加载")
+        self._save_indicator.setStyleSheet("color: #888; font-size: 12px; padding: 0 10px;")
+
+    def _on_text_changed(self):
+        if self._loading or not self.pid: return
+        self._save_indicator.setText("✏ 未保存…")
+        self._save_indicator.setStyleSheet("color: #d97706; font-size: 12px; padding: 0 10px;")
+        self._save_timer.start()
+
+    def _save_now(self):
+        if not self.pid: return
+        try:
+            ST.save_world_bible(self.pid, self.editor.toPlainText())
+            from datetime import datetime
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._save_indicator.setText(f"💾 已保存 {ts}")
+            self._save_indicator.setStyleSheet("color: #16a34a; font-size: 12px; padding: 0 10px;")
+        except Exception as e:
+            self.log.emit(f"保存世界圣经失败: {e}")
+
+    def _save_immediate(self):
+        self._save_timer.stop()
+        self._save_now()
+
+    def _on_continue_episode(self):
+        """打开续集生成对话框 → 提交 GPT 任务"""
+        if not self.pid:
+            QMessageBox.information(self, "提示", "请先选项目"); return
+        # 落盘最新的圣经再发任务
+        self._save_immediate()
+        from .ui_dialogs import ContinueEpisodeDialog
+        dlg = ContinueEpisodeDialog(self, self.pid)
+        if dlg.exec() != dlg.DialogCode.Accepted: return
+        user_brief, forbidden, duration_sec = dlg.get_result()
+
+        # 拼上下文
+        world_bible = ST.load_world_bible(self.pid)
+        eps = ST.list_episodes(self.pid)
+        past_summary_lines = []
+        for e in eps:
+            past_summary_lines.append(
+                f"## 第 {e.number} 集 · {e.title or '未命名'}\n"
+                f"梗概:{e.synopsis or '(无)'}\n"
+                f"情绪曲线:{e.emotional_arc or '(无)'}"
+            )
+            # 取 script 前 600 字防 prompt 爆量
+            if e.script:
+                snippet = e.script[:600] + ("..." if len(e.script) > 600 else "")
+                past_summary_lines.append(f"剧情摘要:{snippet}")
+        past_episodes = "\n\n".join(past_summary_lines) or "(还没有已完成的集)"
+        next_num = (max([e.number for e in eps], default=0)) + 1
+
+        from .prompts import get_template, render_template
+        tpl = get_template("tpl-episode-continue")
+        full_prompt = render_template(
+            tpl,
+            world_bible=world_bible,
+            past_episodes=past_episodes,
+            user_brief=user_brief or "(用户没指定方向,你按弧线推进)",
+            forbidden_reveals=forbidden or "(暂无 — 但仍要保留所有未到时机的核心悬念)",
+            target_duration_seconds=str(duration_sec),
+            next_ep_number=str(next_num),
+        )
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="ai_chat", backend_id="gpt-mirror",
+            title=f"续写第 {next_num} 集 ({duration_sec}s 目标)",
+            prompt=full_prompt,
+            target_kind="episode_continue", target_id=self.pid,
+        )
+        QMessageBox.information(
+            self, "续集任务已入队",
+            f"{msg}\n\nGPT 返回后会自动创建第 {next_num} 集,世界圣经会追加新事件。\n"
+            f"完成后可以打开新集点 '🧠 AI 拆分镜' 拆出 {duration_sec // 10} 段视频。"
+        )
+        self.log.emit(msg)
+
+
 class CharactersView(_AssetGridView):
     NAME = "角色"
     ICON = "👤"
@@ -1003,6 +1155,17 @@ class EpisodesView(QFrame):
         )
         self.import_doc_btn.clicked.connect(self._on_import_document)
         tbl.addWidget(self.import_doc_btn)
+
+        # 续写下一集 — 基于世界圣经 + 已完成集
+        self.continue_btn = QPushButton("📖 续写下一集")
+        self.continue_btn.setObjectName("Subtle")
+        self.continue_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.continue_btn.setToolTip(
+            "电影级连续剧模式 — 基于世界圣经 + 已完成集自动续写下一集剧本\n"
+            "(强约束:以悬念结尾、不揭未到时机的密、节奏对齐 2-5 分钟/集)"
+        )
+        self.continue_btn.clicked.connect(self._on_continue_episode)
+        tbl.addWidget(self.continue_btn)
 
         # M3: AI 拆分镜
         self.ai_split_btn = QPushButton("🧠 AI 拆分镜")
@@ -1823,6 +1986,54 @@ class EpisodesView(QFrame):
         self.log.emit(f"导入分镜 #{shot.number} 视频")
 
     # ==================== M3: AI 拆分镜 ====================
+    def _on_continue_episode(self):
+        """续写下一集 — 复用 WorldBibleView 用过的逻辑"""
+        if not self.pid:
+            QMessageBox.information(self, "提示", "请先选项目"); return
+        from .ui_dialogs import ContinueEpisodeDialog
+        dlg = ContinueEpisodeDialog(self, self.pid)
+        if dlg.exec() != dlg.DialogCode.Accepted: return
+        user_brief, forbidden, duration_sec = dlg.get_result()
+
+        world_bible = ST.load_world_bible(self.pid)
+        eps = ST.list_episodes(self.pid)
+        past_summary_lines = []
+        for e in eps:
+            past_summary_lines.append(
+                f"## 第 {e.number} 集 · {e.title or '未命名'}\n"
+                f"梗概:{e.synopsis or '(无)'}\n"
+                f"情绪曲线:{e.emotional_arc or '(无)'}"
+            )
+            if e.script:
+                snippet = e.script[:600] + ("..." if len(e.script) > 600 else "")
+                past_summary_lines.append(f"剧情摘要:{snippet}")
+        past_episodes = "\n\n".join(past_summary_lines) or "(还没有已完成的集)"
+        next_num = (max([e.number for e in eps], default=0)) + 1
+
+        from .prompts import get_template, render_template
+        tpl = get_template("tpl-episode-continue")
+        full_prompt = render_template(
+            tpl,
+            world_bible=world_bible,
+            past_episodes=past_episodes,
+            user_brief=user_brief or "(用户没指定方向,你按弧线推进)",
+            forbidden_reveals=forbidden or "(暂无 — 但仍要保留所有未到时机的核心悬念)",
+            target_duration_seconds=str(duration_sec),
+            next_ep_number=str(next_num),
+        )
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="ai_chat", backend_id="gpt-mirror",
+            title=f"续写第 {next_num} 集 ({duration_sec}s 目标)",
+            prompt=full_prompt,
+            target_kind="episode_continue", target_id=self.pid,
+        )
+        QMessageBox.information(
+            self, "续集任务已入队",
+            f"{msg}\n\nGPT 返回后会自动创建第 {next_num} 集,世界圣经会追加新事件。"
+        )
+        self.log.emit(msg)
+
     def _on_import_document(self):
         """整篇剧本一键解析:粘贴/选文件 → GPT 解析 → 批量创建角色/场景/集。"""
         if not self.pid:

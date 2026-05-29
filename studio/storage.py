@@ -92,6 +92,54 @@ def save_canvas_items(pid: str, items: List[CanvasItem]):
     _save_list(pid, "canvas_items", items)
 
 
+# ---- 世界圣经(自由 Markdown,所有续集生成都拉这份做上下文)----
+WORLD_BIBLE_DEFAULT = """# 世界圣经
+
+> 这份文档是整个项目的"宇宙说明书"。每次续写下一集时,GPT 会先读它,
+> 保证世界观/规则/角色一致。**写得越细,后面集集越统一。**
+
+## 🌐 核心设定
+(用 1-3 段描述这个世界是什么、为什么有趣、主角的处境)
+
+## ⚖️ 力量体系 / 规则
+(法则、修为、阵营、底层逻辑;能干什么、不能干什么)
+
+## 🏛️ 主要势力 / 角色阵营
+(每个势力一段:目标、首领、跟主角的关系)
+
+## 🌍 地理 / 时空设定
+(主要地点;若有多个世界/层级,在这里讲清楚)
+
+## 📜 时间线 / 已发生事件
+(已经发生过的重大事件,按时间顺序。每完成一集会在这里追加。)
+
+## 🎭 主角弧线规划
+(主角第 1 集 → 最终集会变成什么样,中间几个关键节点)
+
+## 🕯️ 待铺设悬念(未到时机不能揭密)
+- ⏳ 主角真实身份(预计到第 8 集才能完全揭露)
+- ⏳ 反派 X 真正动机(铺到第 5 集前都装作普通配角)
+- ⏳ ...
+
+## ❌ 禁忌 / 不能出现的元素
+(任何不符合项目调性的:现代元素、低龄玩梗、太血腥等等)
+"""
+
+def load_world_bible(pid: str) -> str:
+    f = project_dir(pid) / "world_bible.md"
+    if not f.exists():
+        return WORLD_BIBLE_DEFAULT
+    try:
+        return f.read_text(encoding="utf-8")
+    except Exception:
+        return WORLD_BIBLE_DEFAULT
+
+def save_world_bible(pid: str, text: str):
+    f = project_dir(pid) / "world_bible.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(text or "", encoding="utf-8")
+
+
 # ---- Episodes (每集一个文件,含 shots + segments) ----
 def list_episodes(pid: str) -> List[Episode]:
     ep_dir = project_dir(pid) / "episodes"
