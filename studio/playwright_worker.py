@@ -1042,9 +1042,103 @@ class Worker(QObject):
         目前支持的 target_kind:
           - episode: 拆分镜回写(M3.5)
           - character_facescan: 看图识别五官 → 回填 Character 结构化字段
+          - document_parse: 整篇剧本文档解析 → 批量创建 Characters / Scenes / Episodes
         """
         from .models import Shot, VideoSegment
         pid = task.project_id
+
+        # ---- 整篇剧本文档解析:批量创建素材 ----
+        if task.target_kind == "document_parse":
+            if not isinstance(parsed, dict):
+                self.log.emit(f"[{task.title}] 解析的不是 dict,跳过写回")
+                return
+            counts = {"chars": 0, "scenes": 0, "eps": 0}
+            # 1. 角色
+            chars_in = parsed.get("characters") or []
+            if isinstance(chars_in, list) and chars_in:
+                existing_chars = ST.load_characters(pid)
+                existing_names = {c.name for c in existing_chars}
+                from .models import Character
+                for cd in chars_in:
+                    if not isinstance(cd, dict): continue
+                    name = (cd.get("name") or "").strip()
+                    if not name or name in existing_names: continue
+                    existing_names.add(name)
+                    existing_chars.append(Character(
+                        project_id=pid,
+                        name=name,
+                        role=(cd.get("role") or "主角").strip(),
+                        gender=(cd.get("gender") or "").strip(),
+                        age=(cd.get("age") or "").strip(),
+                        visual_style=(cd.get("visual_style") or "2D 写实国漫").strip(),
+                        hair=(cd.get("hair") or "").strip(),
+                        body=(cd.get("body") or "").strip(),
+                        face_shape=(cd.get("face_shape") or "").strip(),
+                        eye_details=(cd.get("eye_details") or "").strip(),
+                        nose_shape=(cd.get("nose_shape") or "").strip(),
+                        lip_shape=(cd.get("lip_shape") or "").strip(),
+                        eyebrow_style=(cd.get("eyebrow_style") or "").strip(),
+                        jawline=(cd.get("jawline") or "").strip(),
+                        skin_details=(cd.get("skin_details") or "").strip(),
+                        style_lock=(cd.get("style_lock") or "").strip(),
+                        notes=(cd.get("notes") or "").strip(),
+                    ))
+                    counts["chars"] += 1
+                if counts["chars"]:
+                    ST.save_characters(pid, existing_chars)
+            # 2. 场景
+            scenes_in = parsed.get("scenes") or []
+            if isinstance(scenes_in, list) and scenes_in:
+                existing_scenes = ST.load_scenes(pid)
+                existing_names = {s.name for s in existing_scenes}
+                from .models import Scene
+                for sd in scenes_in:
+                    if not isinstance(sd, dict): continue
+                    name = (sd.get("name") or "").strip()
+                    if not name or name in existing_names: continue
+                    existing_names.add(name)
+                    existing_scenes.append(Scene(
+                        project_id=pid,
+                        name=name,
+                        visual_style=(sd.get("visual_style") or "3D 超写实").strip(),
+                        asset_description=(sd.get("asset_description") or "").strip(),
+                        fixed_environment=(sd.get("fixed_environment") or "").strip(),
+                        fixed_lighting=(sd.get("fixed_lighting") or "").strip(),
+                        fixed_background=(sd.get("fixed_background") or "").strip(),
+                        notes=(sd.get("notes") or "").strip(),
+                    ))
+                    counts["scenes"] += 1
+                if counts["scenes"]:
+                    ST.save_scenes(pid, existing_scenes)
+            # 3. 集
+            eps_in = parsed.get("episodes") or []
+            if isinstance(eps_in, list) and eps_in:
+                existing_eps = ST.list_episodes(pid)
+                next_num = (max([e.number for e in existing_eps], default=0)) + 1
+                existing_titles = {e.title for e in existing_eps}
+                from .models import Episode
+                for ed in eps_in:
+                    if not isinstance(ed, dict): continue
+                    title = (ed.get("title") or "").strip()
+                    if title and title in existing_titles: continue
+                    if title: existing_titles.add(title)
+                    new_ep = Episode(
+                        project_id=pid,
+                        number=next_num,
+                        title=title or f"第 {next_num} 集",
+                        synopsis=(ed.get("synopsis") or "").strip(),
+                        emotional_arc=(ed.get("emotional_arc") or "").strip(),
+                        script=(ed.get("script") or "").strip(),
+                    )
+                    ST.save_episode(pid, new_ep)
+                    next_num += 1
+                    counts["eps"] += 1
+            self.log.emit(
+                f"[{task.title}] 整篇剧本解析完成 — "
+                f"新建 {counts['chars']} 角色 / {counts['scenes']} 场景 / "
+                f"{counts['eps']} 集。下一步:打开集详情点 '🧠 AI 拆分镜' 把每集拆成分镜。"
+            )
+            return
 
         # ---- 角色五官识别 ----
         if task.target_kind == "character_facescan":

@@ -287,7 +287,74 @@ DEFAULT_PROMPT_TEMPLATES = [
         ),
     ),
 
-    # M3:分镜板大图自动拼装(给 GPT 用)
+    PromptTemplate(
+        id="tpl-m3-doc-parse",
+        category="拆分镜",
+        title="整篇剧本文档解析(给 GPT 用,返回 JSON)",
+        placeholders=["document"],
+        content=(
+            "你是一位资深的动画项目策划。下面是用户给出的完整剧本文档,里面可能包含:"
+            "世界观、角色 Prompt、场景 Prompt、多段剧情台词、故事板梗概、统一风格关键词、负面词等。\n"
+            "请你解析这份文档,提取出可作为项目素材的结构化数据。\n\n"
+            "**输出格式严格 JSON,不要任何解释或前后文字:**\n"
+            "```json\n"
+            "{{\n"
+            '  "world_setting": "本项目世界观一句话总结(没写则空字符串)",\n'
+            '  "style_keywords": "统一风格关键词(逗号分隔),例:东方玄幻,暗黑神话,虚幻5电影CG",\n'
+            '  "negative_keywords": "统一负面词(逗号分隔)",\n'
+            '  "characters": [\n'
+            '    {{\n'
+            '      "name": "角色名,例:黑暗天神",\n'
+            '      "role": "主角/配角/反派/群演",\n'
+            '      "gender": "男/女/未指定",\n'
+            '      "age": "年龄段或具体岁数",\n'
+            '      "visual_style": "视觉风格,例:东方玄幻暗黑神话",\n'
+            '      "hair": "发型 + 发色 + 长度",\n'
+            '      "body": "体型 + 大致身高",\n'
+            '      "face_shape": "脸型 + 下颌轮廓",\n'
+            '      "eye_details": "眼形 + 眼神 + 瞳色等",\n'
+            '      "nose_shape": "鼻型",\n'
+            '      "lip_shape": "唇形",\n'
+            '      "eyebrow_style": "眉形",\n'
+            '      "jawline": "下颌线",\n'
+            '      "skin_details": "肤色 + 肌肤质感",\n'
+            '      "style_lock": "整体气质锁,例:沉稳压迫感",\n'
+            '      "notes": "其他设定备注,例:服装/能量特效/法器/标志特征"\n'
+            '    }}\n'
+            '  ],\n'
+            '  "scenes": [\n'
+            '    {{\n'
+            '      "name": "场景名,例:天界之巅",\n'
+            '      "visual_style": "视觉风格",\n'
+            '      "asset_description": "整体描述,可直接当 prompt 用",\n'
+            '      "fixed_environment": "固定环境元素",\n'
+            '      "fixed_lighting": "固定光照",\n'
+            '      "fixed_background": "固定背景",\n'
+            '      "notes": "氛围词等额外备注"\n'
+            '    }}\n'
+            '  ],\n'
+            '  "episodes": [\n'
+            '    {{\n'
+            '      "title": "第一集 / 黑暗天神归来 等",\n'
+            '      "synopsis": "本集梗概",\n'
+            '      "emotional_arc": "情绪曲线,例:平静→惊愕→恐慌→决绝",\n'
+            '      "script": "本集的剧情台词+动作文本(给 AI 拆分镜继续处理用)"\n'
+            '    }}\n'
+            '  ]\n'
+            "}}\n"
+            "```\n\n"
+            "**硬性要求:**\n"
+            "- 文档里 \"## 黑暗天神 三视图 Prompt\" 这类章节,务必逐一提取成 character\n"
+            "- \"## 场景 Prompt / ## 天界之巅\" 这类务必提取成 scene\n"
+            "- \"## 10秒短剧开篇\" 或 \"## 故事板\" 类章节合并提取成 episode(同一集可包含多段)\n"
+            "- script 字段只放剧情台词+动作,**不要把 Prompt 章节塞进 script**\n"
+            "- 字段不知道就给空字符串,**不要凭想象编造**\n"
+            "- 角色字段值要具体可视觉化,避免'普通'、'标准'这种模糊词\n\n"
+            "**剧本文档:**\n{document}"
+        ),
+    ),
+
+    # 老的拆分镜模板
     PromptTemplate(
         id="tpl-m3-board-compose",
         category="分镜板",

@@ -993,6 +993,17 @@ class EpisodesView(QFrame):
         tbl.addWidget(title)
         tbl.addStretch()
 
+        # 一键解析整篇剧本文档(创建角色/场景/集)
+        self.import_doc_btn = QPushButton("📥 导入剧本文档")
+        self.import_doc_btn.setObjectName("Subtle")
+        self.import_doc_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.import_doc_btn.setToolTip(
+            "粘贴或选择整篇剧本(可含世界观/角色 Prompt/场景 Prompt/剧情台词)"
+            ",GPT 自动提取并创建角色、场景、集 — 之后再点 'AI 拆分镜' 拆每集"
+        )
+        self.import_doc_btn.clicked.connect(self._on_import_document)
+        tbl.addWidget(self.import_doc_btn)
+
         # M3: AI 拆分镜
         self.ai_split_btn = QPushButton("🧠 AI 拆分镜")
         self.ai_split_btn.setObjectName("Subtle")
@@ -1069,6 +1080,50 @@ class EpisodesView(QFrame):
             self.current_ep = None
             self.add_shot_btn.setEnabled(False)
             self._render_shots()
+        # 接 worker.task_done:document_parse / ai_split 完成后磁盘上集列表变了 → 重读
+        try:
+            from .playwright_worker import get_worker
+            w = get_worker()
+            if w is not None:
+                # disconnect 防止 load 多次造成重复 connect
+                try: w.task_done.disconnect(self._on_external_task_done)
+                except Exception: pass
+                w.task_done.connect(self._on_external_task_done)
+        except Exception:
+            pass
+
+    def _on_external_task_done(self, task_id: str):
+        """worker 完成任务可能新建/改动 episodes(尤其是 document_parse) →
+        重新读盘 + 刷新列表,保留当前选中集。"""
+        if not self.pid: return
+        old_id = self.current_ep.id if self.current_ep else None
+        old_count = len(self.episodes)
+        self.episodes = ST.list_episodes(self.pid)
+        # 没变化就不动 UI(避免每个任务完成都晃一下)
+        new_ids = [e.id for e in self.episodes]
+        if (len(self.episodes) == old_count
+                and all(e.id in new_ids for e in self.episodes if old_id and e.id == old_id)):
+            # 集列表长度没变;但 shots 可能变了(AI 拆分镜完成)→ 刷分镜表
+            if old_id:
+                self.current_ep = next((e for e in self.episodes if e.id == old_id), None)
+                self._render_shots()
+            return
+        # 真有新集了 → 重建列表
+        self.ep_list.blockSignals(True)
+        self.ep_list.clear()
+        for e in self.episodes:
+            it = QListWidgetItem(f"第 {e.number} 集 · {e.title or '未命名'}")
+            it.setData(Qt.UserRole, e.id)
+            self.ep_list.addItem(it)
+        self.ep_list.blockSignals(False)
+        # 恢复选中
+        if old_id and any(e.id == old_id for e in self.episodes):
+            for i, e in enumerate(self.episodes):
+                if e.id == old_id:
+                    self.ep_list.setCurrentRow(i); break
+        elif self.episodes:
+            self.ep_list.setCurrentRow(0)
+        self.log.emit(f"集列表已刷新({len(self.episodes)} 集)")
 
     def _on_ep_changed(self, current, previous):
         if not current:
@@ -1768,6 +1823,92 @@ class EpisodesView(QFrame):
         self.log.emit(f"导入分镜 #{shot.number} 视频")
 
     # ==================== M3: AI 拆分镜 ====================
+    def _on_import_document(self):
+        """整篇剧本一键解析:粘贴/选文件 → GPT 解析 → 批量创建角色/场景/集。"""
+        if not self.pid:
+            QMessageBox.information(self, "提示", "请先选项目"); return
+
+        # 简单弹个对话框收文本
+        dlg = QDialog(self)
+        dlg.setWindowTitle("导入剧本文档 — 一键解析")
+        dlg.setMinimumSize(720, 560)
+        l = QVBoxLayout(dlg); l.setSpacing(10)
+
+        hint = QLabel(
+            "粘贴整篇剧本(可含世界观、角色 Prompt、场景 Prompt、剧情台词、故事板梗概等),"
+            "GPT 会解析并批量创建:角色 / 场景 / 集。\n"
+            "完成后,打开每一集 → 点 '🧠 AI 拆分镜' 进一步拆出分镜。"
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666; font-size: 12px;")
+        l.addWidget(hint)
+
+        # 文件选项
+        file_row = QHBoxLayout()
+        file_btn = QPushButton("📂 从文件选 (.txt / .md)")
+        file_btn.setObjectName("Subtle")
+        file_row.addWidget(file_btn)
+        file_row.addStretch()
+        l.addLayout(file_row)
+
+        editor = QPlainTextEdit()
+        editor.setPlaceholderText(
+            "粘贴你的剧本... 例如:\n\n"
+            "# 世界观\n东方玄幻 + 暗黑神话...\n\n"
+            "# 角色 Prompt\n## 黑暗天神\n东方玄幻暗黑神话风格...\n\n"
+            "# 场景 Prompt\n## 天界之巅\n亿万神殿悬浮...\n\n"
+            "# 10秒短剧开篇\n【0-2秒】镜头俯冲..."
+        )
+        editor.setMinimumHeight(380)
+        l.addWidget(editor, 1)
+
+        def _on_choose_file():
+            fp, _ = QFileDialog.getOpenFileName(
+                dlg, "选剧本文件", "",
+                "文本 (*.txt *.md *.markdown);;所有 (*)"
+            )
+            if not fp: return
+            try:
+                content = Path(fp).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                try: content = Path(fp).read_text(encoding="gbk")
+                except Exception as e:
+                    QMessageBox.warning(dlg, "读文件失败", str(e)); return
+            editor.setPlainText(content)
+        file_btn.clicked.connect(_on_choose_file)
+
+        bb = QDialogButtonBox()
+        bb.addButton("取消", QDialogButtonBox.RejectRole)
+        ok_btn = bb.addButton("🚀 派给 GPT 解析", QDialogButtonBox.AcceptRole)
+        ok_btn.setObjectName("Primary")
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        l.addWidget(bb)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        doc = editor.toPlainText().strip()
+        if not doc:
+            QMessageBox.information(self, "提示", "文档不能为空"); return
+
+        # 渲染模板 → 入队 AI_CHAT 任务
+        from .prompts import get_template, render_template
+        tpl = get_template("tpl-m3-doc-parse")
+        if not tpl:
+            QMessageBox.warning(self, "模板缺失", "找不到 tpl-m3-doc-parse 模板"); return
+        full_prompt = render_template(tpl, document=doc)
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="ai_chat", backend_id="gpt-mirror",
+            title=f"整篇剧本解析 ({len(doc)} 字)",
+            prompt=full_prompt,
+            target_kind="document_parse", target_id=self.pid,
+        )
+        QMessageBox.information(
+            self, "已入队",
+            f"{msg}\n\nGPT 返回后会自动创建角色/场景/集 — 创建完成会在 log 提示,"
+            f"然后你可以打开新创建的集点 '🧠 AI 拆分镜' 进一步拆出分镜。"
+        )
+        self.log.emit(f"{msg}")
+
     def _on_ai_split(self):
         if not self.current_ep: return
         from .ui_dialogs import AISplitDialog, ExportDialog
