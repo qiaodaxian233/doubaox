@@ -116,7 +116,7 @@ class AISplitDialog(QDialog):
     def __init__(self, parent=None, episode=None):
         super().__init__(parent)
         self.setWindowTitle("AI 拆分镜")
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(640)
         self.episode = episode
 
         l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 18); l.setSpacing(12)
@@ -124,31 +124,81 @@ class AISplitDialog(QDialog):
         title.setStyleSheet("font-size: 16px; font-weight: 500;")
         l.addWidget(title)
 
-        # 醒目的硬约束提示 — 豆包 10s/段 + 3-5 镜/段是底线
+        # 醒目的硬约束提示 — 豆包 10s/段 + 3-5 镜/段 + 5 段/账号/天
         hint = QLabel(
-            "<b>豆包硬上限:每段视频 10 秒。每段务必 3-5 镜(超 5 镜豆包会赶工、漏镜)。</b><br>"
+            "<b>豆包硬约束:</b><br>"
+            "• 每段视频 <b>10 秒</b>(seedance 硬上限)<br>"
+            "• 每段 <b>3-5 镜</b>(超 5 镜豆包会赶工、漏镜)<br>"
+            "• 每账号每天 <b>5 段额度 = 50 秒成片</b>(超了下一天再来,或开多账号)<br>"
             "<span style='color:#888;'>"
-            "若剧本内容过密,优先<b>多分几段</b>(每段还是 10s);<b>不要</b>把镜数往单段塞。"
+            "若剧本内容过密,优先<b>多分几段</b>(每段 10s),<b>不要</b>往单段塞镜。"
             "</span>"
         )
         hint.setStyleSheet(
             "background: #fef3c7; border: 1px solid #fbbf24; border-radius: 6px; "
-            "padding: 8px 12px; font-size: 12px;"
+            "padding: 10px 12px; font-size: 12px;"
         )
         hint.setWordWrap(True)
         l.addWidget(hint)
 
+        # 取当前豆包账号剩余额度,实时算"还能拍几段"
+        from . import storage as ST
+        try:
+            accs = [a for a in ST.load_accounts()
+                    if a.backend_id == "doubao" and getattr(a, "enabled", True)]
+            total_left = sum(
+                (a.daily_quota_total - (a.daily_quota_used or 0))
+                if not a.is_unlimited() else 999
+                for a in accs
+            )
+            n_unl = sum(1 for a in accs if a.is_unlimited())
+            quota_txt = (
+                f"📊 当前 {len(accs)} 个豆包账号" +
+                (f"(含 {n_unl} 个无限)" if n_unl else "") +
+                f",今日剩余总额度 <b>{total_left}</b> 段 ≈ "
+                f"<b>{total_left * 10}s</b> 成片"
+            )
+        except Exception:
+            quota_txt = "📊 (无法读取账号额度)"
+        quota_label = QLabel(quota_txt)
+        quota_label.setStyleSheet("color: #16a34a; font-size: 12px; padding: 0 4px;")
+        l.addWidget(quota_label)
+
         f = QFormLayout(); f.setSpacing(10)
-        self.seg_count = QSpinBox(); self.seg_count.setRange(1, 20); self.seg_count.setValue(2)
+        # 默认 5 段(对齐 1 账号上限);用户可改少不可超总剩余(setRange 软提示用)
+        self.seg_count = QSpinBox(); self.seg_count.setRange(1, 30); self.seg_count.setValue(5)
         self.seg_count.setSuffix(" 段")
-        self.seg_count.setToolTip("视频段数 — 每段 10s。建议:剧本总秒数 ÷ 10,向上取整")
+        self.seg_count.setToolTip("视频段数 — 每段 10s。1 账号 5 段 = 50s 成片;多账号可串联更长")
         f.addRow("视频段数", self.seg_count)
-        # 硬卡 5 — 之前是 6,豆包稳赶工
         self.shots_per_seg = QSpinBox(); self.shots_per_seg.setRange(3, 5); self.shots_per_seg.setValue(4)
         self.shots_per_seg.setSuffix(" 镜/段")
         self.shots_per_seg.setToolTip("每段 3-5 镜,超过 5 豆包会赶工漏镜")
         f.addRow("每段分镜数", self.shots_per_seg)
+
+        # 实时总长预览 + 配额对比
+        self.summary_label = QLabel("")
+        self.summary_label.setStyleSheet("color: #374151; font-size: 12px; padding: 4px 0;")
+        f.addRow("📐 预计", self.summary_label)
         l.addLayout(f)
+
+        def _update_summary():
+            segs = self.seg_count.value()
+            shots = self.shots_per_seg.value()
+            total_shots = segs * shots
+            total_sec = segs * 10
+            warn = ""
+            try:
+                if total_left < segs and total_left < 999:
+                    warn = (f" <span style='color:#dc2626;'>"
+                            f"⚠ 超今日剩余({total_left} 段),会有 {segs - total_left} 段排队等明天或新账号"
+                            f"</span>")
+            except Exception: pass
+            self.summary_label.setText(
+                f"{segs} 段 × 10s = <b>{total_sec}s</b> 成片,共 <b>{total_shots}</b> 镜{warn}"
+            )
+        self.seg_count.valueChanged.connect(_update_summary)
+        self.shots_per_seg.valueChanged.connect(_update_summary)
+        _update_summary()
 
         l.addWidget(QLabel("剧本(中文):"))
         self.script = QPlainTextEdit()
@@ -163,7 +213,7 @@ class AISplitDialog(QDialog):
                 self.script.setPlainText(episode.script)
             elif episode.synopsis:
                 self.script.setPlainText(episode.synopsis)
-        self.script.setMinimumHeight(220)
+        self.script.setMinimumHeight(200)
         l.addWidget(self.script)
 
         b = QDialogButtonBox()
