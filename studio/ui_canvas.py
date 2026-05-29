@@ -716,6 +716,10 @@ class CanvasView(QGraphicsView):
     blank_action        = Signal(str, QPointF)   # action, scene pos
     log                 = Signal(str)
     manual_connection   = Signal(str, str)       # src_id, dst_id
+    # 任何脏操作(添加/删除/移动/连线/拖动)发出本信号 → 父级 debounce 保存
+    dirty_changed       = Signal()
+    # 用户从 OS 拖文件到画布:list[str] 文件路径, QPointF scene pos
+    files_dropped       = Signal(list, QPointF)
 
     def __init__(self):
         super().__init__()
@@ -727,6 +731,8 @@ class CanvasView(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor(C["bg"])))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 接收 OS 拖入的文件
+        self.setAcceptDrops(True)
 
         self.scene_ = QGraphicsScene(-5000, -5000, 10000, 10000)
         self.setScene(self.scene_)
@@ -741,6 +747,34 @@ class CanvasView(QGraphicsView):
         self._connect_mode = False
         self._connect_src: Optional[_NodeBase] = None
         self._temp_line: Optional[QGraphicsPathItem] = None
+
+    # ---- OS 文件拖入 ----
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+        else:
+            super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        md = e.mimeData()
+        if not md.hasUrls():
+            super().dropEvent(e); return
+        paths = []
+        for u in md.urls():
+            if u.isLocalFile():
+                paths.append(u.toLocalFile())
+        if paths:
+            scene_pos = self.mapToScene(e.position().toPoint())
+            self.files_dropped.emit(paths, scene_pos)
+            e.acceptProposedAction()
+        else:
+            super().dropEvent(e)
 
     def set_connect_mode(self, on: bool):
         self._connect_mode = on
@@ -838,6 +872,9 @@ class CanvasView(QGraphicsView):
                 self._temp_line = None
             self._connect_src = None
             return
+        # 普通 release — 可能是刚拖完一个节点。无脑发 dirty,父级 debounce 处理冗余
+        if e.button() == Qt.LeftButton:
+            self.dirty_changed.emit()
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
@@ -867,6 +904,8 @@ class CanvasView(QGraphicsView):
                           lambda: self.blank_action.emit("new_generator", scene_pos))
             menu.addAction("📝 在此放文本",
                           lambda: self.blank_action.emit("new_text", scene_pos))
+            menu.addAction("🖼 上传图片/视频到此...",
+                          lambda: self.blank_action.emit("upload_media", scene_pos))
             menu.addSeparator()
             menu.addAction("🎯 适配所有节点", self.fit_all)
             menu.addAction("🔍 重置缩放 (100%)", self.reset_zoom)
@@ -947,6 +986,7 @@ class CanvasView(QGraphicsView):
         self.scene_.addItem(node)
         node.setPos(pos)
         self._nodes_by_id[node.node_id] = node
+        self.dirty_changed.emit()
 
     def remove_node(self, node_id: str):
         node = self._nodes_by_id.get(node_id)
@@ -959,6 +999,7 @@ class CanvasView(QGraphicsView):
             self._connections.remove(ln)
         self.scene_.removeItem(node)
         del self._nodes_by_id[node_id]
+        self.dirty_changed.emit()
 
     def add_connection(self, src_id: str, dst_id: str):
         src = self._nodes_by_id.get(src_id)
@@ -971,6 +1012,7 @@ class CanvasView(QGraphicsView):
         self.scene_.addItem(ln)
         self._connections.append(ln)
         src.add_connection(ln); dst.add_connection(ln)
+        self.dirty_changed.emit()
 
     def clear_all(self):
         for ln in self._connections:
@@ -1022,6 +1064,12 @@ class InfiniteCanvasView(QFrame):
         add_text_btn.clicked.connect(lambda: self._add_text_at(QPointF(0, 0)))
         tbl.addWidget(add_text_btn)
 
+        upload_btn = QPushButton("🖼 上传")
+        upload_btn.setObjectName("Subtle")
+        upload_btn.setToolTip("从本地导入图片/视频到画布(可多选)")
+        upload_btn.clicked.connect(lambda: self._upload_media_at(None))
+        tbl.addWidget(upload_btn)
+
         self.connect_mode_btn = QPushButton("🔗 连线")
         self.connect_mode_btn.setObjectName("Subtle")
         self.connect_mode_btn.setCheckable(True)
@@ -1046,8 +1094,17 @@ class InfiniteCanvasView(QFrame):
         auto_btn.clicked.connect(self._auto_layout)
         tbl.addWidget(auto_btn)
 
-        save_btn = QPushButton("💾 保存"); save_btn.setObjectName("Subtle")
-        save_btn.clicked.connect(self._save_all)
+        # 保存状态指示器(autosave 用)— 让用户看得见自动保存确实在跑
+        self._save_status_label = QLabel("💾 已保存")
+        self._save_status_label.setStyleSheet(
+            "color: #888; font-size: 12px; padding: 0 8px;"
+        )
+        self._save_status_label.setToolTip("画布会在你改动后 2 秒内自动保存")
+        tbl.addWidget(self._save_status_label)
+
+        save_btn = QPushButton("💾 立即保存"); save_btn.setObjectName("Subtle")
+        save_btn.setToolTip("强制立刻保存(平时不点也会 2s 内自动保存)")
+        save_btn.clicked.connect(self._save_all_immediate)
         tbl.addWidget(save_btn)
 
         root.addWidget(tb); root.addWidget(Hline())
@@ -1058,6 +1115,9 @@ class InfiniteCanvasView(QFrame):
         self.canvas.blank_action.connect(self._on_blank_action)
         self.canvas.log.connect(self.log)
         self.canvas.manual_connection.connect(self._on_manual_connection)
+        self.canvas.files_dropped.connect(
+            lambda paths, pos: self._upload_media_at(pos, paths=paths)
+        )
         root.addWidget(self.canvas, 1)
 
         # 连接 Worker 完成信号
@@ -1069,11 +1129,21 @@ class InfiniteCanvasView(QFrame):
         except Exception as e:
             print(f"无法挂接 worker 信号: {e}")
 
-        # 自动保存
+        # 自动保存:2 秒 debounce
+        # 任何 dirty 信号(节点添加/删除/拖动/连线)重启计时器 → 用户停手 2s 后才存,
+        # 比老版的 8s 周期 polling 既快又省。手动按"立即保存"绕过 debounce。
         self._autosave_timer = QTimer(self)
-        self._autosave_timer.setInterval(8000)
-        self._autosave_timer.timeout.connect(self._save_all)
-        self._autosave_timer.start()
+        self._autosave_timer.setInterval(2000)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self.canvas.dirty_changed.connect(self._mark_dirty)
+        # _loading=True 时屏蔽 dirty(否则 _refresh 一次性 add_node 几十个节点会一直触发)
+        self._loading = False
+        # 还保留 worker 完成回写的兜底定时(60s 一次,catch 漏掉的 dirty)
+        self._safety_timer = QTimer(self)
+        self._safety_timer.setInterval(60000)
+        self._safety_timer.timeout.connect(self._do_autosave)
+        self._safety_timer.start()
 
     def load(self, pid: str):
         self.pid = pid
@@ -1082,6 +1152,7 @@ class InfiniteCanvasView(QFrame):
     def _refresh(self):
         if not self.pid:
             self.canvas.clear_all(); return
+        self._loading = True  # 屏蔽 add_node 触发的 dirty
         self.canvas.clear_all()
 
         positions = self._load_positions()
@@ -1186,6 +1257,7 @@ class InfiniteCanvasView(QFrame):
         self.canvas.fit_all()
         n_canvas = sum(1 for it in self._canvas_items)
         self.log.emit(f"画布加载 {len(nodes_to_add)} 节点 ({len(self.canvas._connections)} 连线,自定义 {n_canvas})")
+        self._loading = False  # 加载完毕,后续 add_node 才会被 _mark_dirty 当真
 
     def _auto_layout(self, target_nodes: List[_NodeBase] = None):
         if not self.pid: return
@@ -1253,6 +1325,108 @@ class InfiniteCanvasView(QFrame):
                 self._canvas_items = active_items
             except Exception as e:
                 self.log.emit(f"画布项保存失败: {e}")
+
+    # ---- autosave ----
+    def _mark_dirty(self):
+        """收到 canvas.dirty_changed → 重启 2s debounce 定时器,
+        同时刷新状态指示器为'未保存…'。_refresh 期间 _loading=True 直接忽略。"""
+        if not getattr(self, "pid", None): return
+        if getattr(self, "_loading", False): return  # 加载阶段 add_node 触发的不算用户操作
+        if hasattr(self, "_save_status_label"):
+            self._save_status_label.setText("✏ 未保存…")
+            self._save_status_label.setStyleSheet(
+                "color: #d97706; font-size: 12px; padding: 0 8px;"
+            )
+        if hasattr(self, "_autosave_timer"):
+            self._autosave_timer.start()  # restart → debounce
+
+    def _do_autosave(self):
+        """定时器回调:真正落盘 + 刷新指示器。"""
+        if not getattr(self, "pid", None): return
+        self._save_all()
+        if hasattr(self, "_save_status_label"):
+            from datetime import datetime
+            ts = datetime.now().strftime("%H:%M:%S")
+            self._save_status_label.setText(f"💾 已保存 {ts}")
+            self._save_status_label.setStyleSheet(
+                "color: #16a34a; font-size: 12px; padding: 0 8px;"
+            )
+
+    def _save_all_immediate(self):
+        """用户点'立即保存'按钮 → 取消 debounce 直接存。"""
+        if hasattr(self, "_autosave_timer"):
+            self._autosave_timer.stop()
+        self._do_autosave()
+
+    # ---- 上传图片/视频到画布 ----
+    def _upload_media_at(self, scene_pos, paths=None):
+        """把本地图片/视频导入到项目资产并放到画布上。
+        - paths=None:打开文件对话框让用户选
+        - paths=[...]:直接用给定的文件列表(从 OS 拖入时用)
+        scene_pos 为 None 时,放到当前视口中央。"""
+        if not self.pid:
+            self.log.emit("请先选项目再上传"); return
+        if paths is None:
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "选图片或视频(支持多选)", "",
+                "媒体 (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.mp4 *.mov *.webm *.avi *.mkv);;"
+                "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;"
+                "视频 (*.mp4 *.mov *.webm *.avi *.mkv);;"
+                "所有 (*)",
+            )
+        else:
+            # 过滤掉非媒体文件(用户可能拖一堆乱七八糟进来)
+            VALID_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+                         ".mp4", ".mov", ".webm", ".avi", ".mkv"}
+            from pathlib import Path
+            files = [p for p in paths if Path(p).suffix.lower() in VALID_EXT]
+            ignored = len(paths) - len(files)
+            if ignored:
+                self.log.emit(f"忽略 {ignored} 个非图片/视频文件")
+        if not files: return
+        # 起点:scene_pos 或视口中央
+        if scene_pos is None:
+            try:
+                center = self.canvas.viewport().rect().center()
+                scene_pos = self.canvas.mapToScene(center)
+            except Exception:
+                scene_pos = QPointF(0, 0)
+        from pathlib import Path
+        ok_count = 0
+        for i, fp in enumerate(files):
+            try:
+                p = Path(fp)
+                if not p.exists():
+                    self.log.emit(f"⚠ 文件不存在: {fp}"); continue
+                # 导入到项目 assets/
+                rel = ST.import_asset(self.pid, p)
+                ext = p.suffix.lower()
+                is_video = ext in (".mp4", ".mov", ".webm", ".avi", ".mkv")
+                # 简单网格排布:每行 4 个,横向 280px,纵向 200px
+                x = scene_pos.x() + (i % 4) * 280
+                y = scene_pos.y() + (i // 4) * 200
+                item = CanvasItem(
+                    kind=CANVAS_VIDEO if is_video else CANVAS_IMAGE,
+                    project_id=self.pid,
+                    title=p.stem[:30],
+                    x=x, y=y,
+                    status="done",
+                    result_file=rel,
+                    prompt="(本地上传)",
+                    task_type="video" if is_video else "image",
+                    backend_id="",
+                )
+                # canvas 上 image/video 都用 GeneratorNode 渲染(reload 路径也是这样,
+                # 见 _refresh 里 item.kind in (CANVAS_GENERATOR, CANVAS_IMAGE, CANVAS_VIDEO))。
+                # VideoNode 是资源库节点,签名跟这边不匹配,别用。
+                node = GeneratorNode(item)
+                self.canvas.add_node(node, QPointF(x, y))
+                ok_count += 1
+            except Exception as e:
+                self.log.emit(f"上传 {fp} 失败: {e}")
+        if ok_count:
+            self.log.emit(f"已上传 {ok_count}/{len(files)} 个文件到画布")
+            self._save_all_immediate()  # 上传是显式操作,立刻存
 
     # ---- 新增节点 ----
     def _add_generator_at(self, scene_pos: QPointF):
@@ -1370,6 +1544,8 @@ class InfiniteCanvasView(QFrame):
             self._add_generator_at(scene_pos)
         elif action == "new_text":
             self._add_text_at(scene_pos)
+        elif action == "upload_media":
+            self._upload_media_at(scene_pos)
 
     # ---- 手动连线 ----
     def _toggle_connect_mode(self, on: bool):
