@@ -1038,10 +1038,55 @@ class Worker(QObject):
         return None
 
     def _writeback_ai_chat(self, task: GenerationTask, parsed: dict, raw_text: str):
-        """把 AI 返回的 JSON 拆分镜数据写回 episode."""
+        """把 AI 返回的 JSON 写回相应对象。
+        目前支持的 target_kind:
+          - episode: 拆分镜回写(M3.5)
+          - character_facescan: 看图识别五官 → 回填 Character 结构化字段
+        """
         from .models import Shot, VideoSegment
         pid = task.project_id
 
+        # ---- 角色五官识别 ----
+        if task.target_kind == "character_facescan":
+            if not isinstance(parsed, dict):
+                self.log.emit(f"[{task.title}] 解析的不是 dict,跳过写回")
+                return
+            chars = ST.load_characters(pid)
+            ch = next((c for c in chars if c.id == task.target_id), None)
+            if not ch:
+                self.log.emit(f"[{task.title}] 找不到目标角色 (id={task.target_id})")
+                return
+            # 字段一一对应,只覆盖 GPT 给了非空值的字段(避免把用户已填的清掉)
+            fields_map = {
+                "face_shape": "face_shape", "eye_details": "eye_details",
+                "nose_shape": "nose_shape", "lip_shape": "lip_shape",
+                "eyebrow_style": "eyebrow_style", "jawline": "jawline",
+                "skin_details": "skin_details", "style_lock": "style_lock",
+                "hair": "hair", "body": "body",
+            }
+            filled = []
+            for k_json, k_attr in fields_map.items():
+                v = parsed.get(k_json)
+                if v is None: continue
+                v_str = str(v).strip()
+                if not v_str: continue
+                # 只在原字段为空 OR GPT 给的值跟原值显著不同时才覆盖
+                # —— 不强覆盖避免用户手填的精确描述被换掉
+                cur = (getattr(ch, k_attr, "") or "").strip()
+                if cur and cur == v_str: continue
+                setattr(ch, k_attr, v_str)
+                filled.append(k_attr)
+            if filled:
+                ST.save_characters(pid, chars)
+                self.log.emit(
+                    f"[{task.title}] 已识别并写回 {len(filled)} 个字段: "
+                    f"{', '.join(filled)}"
+                )
+            else:
+                self.log.emit(f"[{task.title}] GPT 没给出任何有效字段")
+            return
+
+        # ---- 拆分镜回写(原有) ----
         if task.target_kind != "episode": return
         eps = ST.list_episodes(pid)
         ep = next((e for e in eps if e.id == task.target_id), None)

@@ -363,6 +363,27 @@ class _AssetGridView(QFrame):
         root.addWidget(self.splitter, 1)
         self._render_detail(None)
 
+        # 接 worker.task_done:任务完成可能改了磁盘上的资产(比如五官识别回填)
+        # → 重新加载 items + 刷新当前选中详情
+        try:
+            from .playwright_worker import get_worker
+            w = get_worker()
+            if w is not None:
+                w.task_done.connect(self._on_external_task_done)
+        except Exception:
+            pass
+
+    def _on_external_task_done(self, task_id: str):
+        """worker 完成任意 task → 资产可能被改了,重读 + 刷新。
+        实现简单点直接全量重新 _fetch,代价小(几十条 item 内)。"""
+        if not self.pid: return
+        old_selected = self.selected_id
+        self.items = self._fetch()
+        self._render_grid()
+        if old_selected:
+            item = next((x for x in self.items if x.id == old_selected), None)
+            if item: self._render_detail(item)
+
     def load(self, pid: str):
         self.pid = pid
         self.items = self._fetch()
@@ -602,6 +623,17 @@ class CharactersView(_AssetGridView):
         copy_btn.clicked.connect(lambda: self._copy_json(c))
         actions_row.addWidget(copy_btn)
 
+        scan_btn = QPushButton("🔍 自动识别五官")
+        scan_btn.setObjectName("Subtle")
+        scan_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        scan_btn.setToolTip(
+            "把当前参考图发给 GPT,让它反向描述五官并自动填回这里的字段。\n"
+            "需要先有参考图(点缩略图导入或拖一张过来)。"
+        )
+        scan_btn.clicked.connect(lambda: self._scan_face_from_image(c))
+        scan_btn.setEnabled(bool(c.reference_image))
+        actions_row.addWidget(scan_btn)
+
         gen_btn = QPushButton("🤖 用 GPT 生成三视图")
         gen_btn.setObjectName("Accent")
         gen_btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -624,6 +656,51 @@ class CharactersView(_AssetGridView):
         }
         QApplication.clipboard().setText(json.dumps(data, ensure_ascii=False, indent=2))
         self.log.emit(f"已复制 {c.name} 的结构化 JSON 到剪贴板")
+
+    def _scan_face_from_image(self, c: Character):
+        """把参考图发给 GPT(用 AI 聊天任务),让它反向输出 face_shape 等结构化数据,
+        worker 自动写回到此 Character。"""
+        if not c.reference_image:
+            self.log.emit(f"{c.name} 还没参考图,先点缩略图导入一张再来")
+            return
+        full = ST.asset_full_path(self.pid, c.reference_image)
+        if not full or not full.exists():
+            self.log.emit(f"参考图文件不存在: {c.reference_image}")
+            return
+
+        # 反向描述用的 prompt — 强约束输出形状对齐 Character 字段
+        prompt = (
+            "请仔细观察我刚上传的角色参考图,严格按下面 JSON 结构输出此人的五官与体貌特征。\n"
+            "**只输出一个 JSON 代码块,不要任何额外解释或前后文字**。\n"
+            "每个字段用中文短语描述,要具体到能让另一张图保持视觉一致(避免'普通'、'标准'这种模糊词)。\n"
+            "只描述图里能看到的特征,不要凭想象添加细节。\n\n"
+            "```json\n"
+            "{\n"
+            '  "face_shape": "脸型 + 下颌轮廓,例:鹅蛋脸下颌线柔和 / 方脸下颌棱角分明",\n'
+            '  "eye_details": "眼形 + 眼神,例:狭长丹凤眼眼尾上挑,眼神锋利",\n'
+            '  "nose_shape": "鼻型,例:高挺直鼻鼻翼略宽",\n'
+            '  "lip_shape": "唇形 + 唇色,例:薄唇紧抿嘴角略下垂,唇色偏浅",\n'
+            '  "eyebrow_style": "眉形,例:剑眉斜飞眉峰高挑",\n'
+            '  "jawline": "下颌线 + 颧骨,例:棱角分明的方下颌,颧骨偏高",\n'
+            '  "skin_details": "肤色 + 肌肤质感,例:冷白皮,有轻微眼下细纹",\n'
+            '  "style_lock": "整体气质锁,例:沉稳压迫感商务精英气质",\n'
+            '  "hair": "发型 + 发色 + 长度,例:黑色短碎发偏分",\n'
+            '  "body": "体型 + 大致身高,例:身材修长偏瘦,约 180cm"\n'
+            "}\n"
+            "```"
+        )
+
+        msg = _enqueue_task(
+            project_id=self.pid,
+            task_type="ai_chat",
+            backend_id="gpt-mirror",
+            title=f"识别 {c.name} 五官",
+            prompt=prompt,
+            target_kind="character_facescan",
+            target_id=c.id,
+            reference_images=[str(full)],
+        )
+        self.log.emit(f"{msg} — 已派 GPT 看图识别五官,完成后自动填回字段")
 
     def _gen_triview(self, c: Character):
         """生成角色三视图卡 - 拼完整 prompt 并打开 GPT 镜像站。"""
