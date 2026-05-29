@@ -1190,6 +1190,42 @@ class Worker(QObject):
         segments_data = parsed.get("segments") or []
         if not isinstance(segments_data, list): return
 
+        # 硬卡:GPT 不听话生成超 5 镜/段时,自动拆段(豆包 10s 装 6+ 镜稳赶工漏镜)
+        # 每段切成 ceil(N/5) 段,每段 ≤5 镜,number 重排
+        def _split_oversized_segments(raw_segs):
+            out = []
+            for sd in raw_segs:
+                if not isinstance(sd, dict):
+                    out.append(sd); continue
+                shots = sd.get("shots") or []
+                if not isinstance(shots, list) or len(shots) <= 5:
+                    out.append(sd); continue
+                # 超 5 镜 → 切段
+                self.log.emit(
+                    f"[{task.title}] ⚠ GPT 返回段 {sd.get('number','?')} "
+                    f"有 {len(shots)} 镜(超 5 上限),自动拆成 "
+                    f"{(len(shots) + 4) // 5} 段免得豆包赶工漏镜"
+                )
+                # 每 4-5 镜一组,避免最后一组太少:目标每组 4 镜,余数往前补
+                chunks = []
+                i = 0
+                remain = len(shots)
+                while remain > 0:
+                    take = 4 if remain >= 8 else min(5, remain)
+                    chunks.append(shots[i:i+take])
+                    i += take; remain -= take
+                base_syn = sd.get("synopsis") or ""
+                for ci, chunk in enumerate(chunks):
+                    new_sd = dict(sd)
+                    new_sd["shots"] = chunk
+                    new_sd["synopsis"] = (
+                        f"{base_syn}(自动拆段 {ci+1}/{len(chunks)})"
+                        if base_syn else f"自动拆段 {ci+1}/{len(chunks)}"
+                    )
+                    out.append(new_sd)
+            return out
+        segments_data = _split_oversized_segments(segments_data)
+
         chars_by_name = {c.name: c.id for c in ST.load_characters(pid)}
         scenes_by_name = {s.name: s.id for s in ST.load_scenes(pid)}
 

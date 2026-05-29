@@ -116,7 +116,7 @@ class AISplitDialog(QDialog):
     def __init__(self, parent=None, episode=None):
         super().__init__(parent)
         self.setWindowTitle("AI 拆分镜")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(620)
         self.episode = episode
 
         l = QVBoxLayout(self); l.setContentsMargins(24, 22, 24, 18); l.setSpacing(12)
@@ -124,20 +124,29 @@ class AISplitDialog(QDialog):
         title.setStyleSheet("font-size: 16px; font-weight: 500;")
         l.addWidget(title)
 
+        # 醒目的硬约束提示 — 豆包 10s/段 + 3-5 镜/段是底线
         hint = QLabel(
-            "GPT 会返回 JSON 分镜表(含 6 维度 + 衔接锚点)。"
-            "应用 3-5 镜/段密度规则。"
+            "<b>豆包硬上限:每段视频 10 秒。每段务必 3-5 镜(超 5 镜豆包会赶工、漏镜)。</b><br>"
+            "<span style='color:#888;'>"
+            "若剧本内容过密,优先<b>多分几段</b>(每段还是 10s);<b>不要</b>把镜数往单段塞。"
+            "</span>"
         )
-        hint.setStyleSheet(f"color: {C['muted']}; font-size: 11px;")
+        hint.setStyleSheet(
+            "background: #fef3c7; border: 1px solid #fbbf24; border-radius: 6px; "
+            "padding: 8px 12px; font-size: 12px;"
+        )
         hint.setWordWrap(True)
         l.addWidget(hint)
 
         f = QFormLayout(); f.setSpacing(10)
         self.seg_count = QSpinBox(); self.seg_count.setRange(1, 20); self.seg_count.setValue(2)
         self.seg_count.setSuffix(" 段")
+        self.seg_count.setToolTip("视频段数 — 每段 10s。建议:剧本总秒数 ÷ 10,向上取整")
         f.addRow("视频段数", self.seg_count)
-        self.shots_per_seg = QSpinBox(); self.shots_per_seg.setRange(2, 6); self.shots_per_seg.setValue(4)
+        # 硬卡 5 — 之前是 6,豆包稳赶工
+        self.shots_per_seg = QSpinBox(); self.shots_per_seg.setRange(3, 5); self.shots_per_seg.setValue(4)
         self.shots_per_seg.setSuffix(" 镜/段")
+        self.shots_per_seg.setToolTip("每段 3-5 镜,超过 5 豆包会赶工漏镜")
         f.addRow("每段分镜数", self.shots_per_seg)
         l.addLayout(f)
 
@@ -148,9 +157,13 @@ class AISplitDialog(QDialog):
             "他的左臂浮现紫金色符文,意识到自己穿越了。\n"
             "走出矿洞,发现远方洛阳城已被异种菌丝吞噬..."
         )
-        if episode and episode.synopsis:
-            self.script.setPlainText(episode.synopsis)
-        self.script.setMinimumHeight(180)
+        # 优先用 episode.script(导入剧本文档写入的);为空再退到 synopsis
+        if episode:
+            if episode.script:
+                self.script.setPlainText(episode.script)
+            elif episode.synopsis:
+                self.script.setPlainText(episode.synopsis)
+        self.script.setMinimumHeight(220)
         l.addWidget(self.script)
 
         b = QDialogButtonBox()
