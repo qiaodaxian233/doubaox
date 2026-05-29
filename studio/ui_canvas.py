@@ -1448,12 +1448,20 @@ class InfiniteCanvasView(QFrame):
 
         from .task_queue import get_queue
         from .playwright_worker import get_worker
+        # 自动识别参考图:看有没有连线指向此节点(角色卡 / 上传图 / 已生成图)
+        refs = self._resolve_incoming_references(item.id)
+        if refs:
+            self.log.emit(
+                f"自动识别到 {len(refs)} 张参考图(连线传入): "
+                f"{[Path(p).name for p in refs]}"
+            )
         task = GenerationTask(
             project_id=self.pid,
             task_type=item.task_type,
             backend_id=item.backend_id,
             title=item.title or "画布生成",
             prompt=item.prompt,
+            reference_images=refs,
             target_kind="canvas_item",
             target_id=item.id,
         )
@@ -1514,12 +1522,20 @@ class InfiniteCanvasView(QFrame):
                 item.status = "queued"
                 item.result_file = ""
                 item.error = ""
+                # 重新跑也要识别一遍参考图(用户中间可能新连了线)
+                refs = self._resolve_incoming_references(item.id)
+                if refs:
+                    self.log.emit(
+                        f"重生成时识别到 {len(refs)} 张参考图: "
+                        f"{[Path(p).name for p in refs]}"
+                    )
                 task = GenerationTask(
                     project_id=self.pid,
                     task_type=item.task_type,
                     backend_id=item.backend_id,
                     title=item.title or "画布生成",
                     prompt=item.prompt,
+                    reference_images=refs,
                     target_kind="canvas_item",
                     target_id=item.id,
                 )
@@ -1546,6 +1562,60 @@ class InfiniteCanvasView(QFrame):
             self._add_text_at(scene_pos)
         elif action == "upload_media":
             self._upload_media_at(scene_pos)
+
+    # ---- 参考图自动识别 ----
+    def _resolve_incoming_references(self, node_id: str) -> List[str]:
+        """读 manual_links.json,把所有指向 node_id 的入边解析成本地图片绝对路径。
+
+        支持三种来源:
+          - AssetNode (character/scene/prop) → asset.reference_image
+          - 画布上 status=done 的 CanvasItem(image kind)→ result_file
+            (这包括用户上传的图、之前生成完的图)
+          - text/video/未完成的生成节点 → 跳过
+        返回字符串路径列表(直接喂给 GenerationTask.reference_images)。
+        """
+        from pathlib import Path
+        out: List[str] = []
+        seen: set = set()
+        f = ST.project_dir(self.pid) / "manual_links.json"
+        if not f.exists(): return out
+        try:
+            links = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return out
+
+        # 预加载资产 / canvas items,避免每条边都重读
+        chars = {c.id: c for c in ST.load_characters(self.pid)}
+        scenes = {s.id: s for s in ST.load_scenes(self.pid)}
+        props  = {p.id: p for p in ST.load_props(self.pid)}
+        items  = {it.id: it for it in (ST.load_canvas_items(self.pid) or [])}
+
+        for link in links:
+            if link.get("dst") != node_id: continue
+            src_id = link.get("src", "")
+            if not src_id or src_id in seen: continue
+            seen.add(src_id)
+            rel = None
+            if src_id in chars:
+                rel = chars[src_id].reference_image
+            elif src_id in scenes:
+                rel = scenes[src_id].reference_image
+            elif src_id in props:
+                rel = props[src_id].reference_image
+            elif src_id in items:
+                it = items[src_id]
+                # 只接已完成的图片;视频不能当参考图;还在跑的也不算数
+                if it.status == "done" and it.result_file:
+                    if it.kind == CANVAS_IMAGE or it.task_type == "image":
+                        rel = it.result_file
+            if not rel: continue
+            try:
+                full = ST.asset_full_path(self.pid, rel)
+                if full and Path(full).exists():
+                    out.append(str(full))
+            except Exception:
+                continue
+        return out
 
     # ---- 手动连线 ----
     def _toggle_connect_mode(self, on: bool):
