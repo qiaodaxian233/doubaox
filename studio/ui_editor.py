@@ -521,6 +521,18 @@ class WorldBibleView(QFrame):
         save_btn.clicked.connect(self._save_immediate)
         tbl.addWidget(save_btn)
 
+        # 手动工作流:从已下载的视频抽末帧,当下一段的首帧参考图(镜头衔接)
+        lastframe_btn = QPushButton("🎬 抽取末帧")
+        lastframe_btn.setObjectName("Subtle")
+        lastframe_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        lastframe_btn.setToolTip(
+            "手动衔接用:选一个已生成/下载的视频,抽出最后一帧存成图片。\n"
+            "把这张末帧当下一段的「首帧参考图」上传,镜头就能接上。\n"
+            "(需要系统装了 ffmpeg)"
+        )
+        lastframe_btn.clicked.connect(self._on_extract_last_frame)
+        tbl.addWidget(lastframe_btn)
+
         self.continue_btn = QPushButton("📖 续写下一集")
         self.continue_btn.setObjectName("Primary")
         self.continue_btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -639,6 +651,58 @@ class WorldBibleView(QFrame):
             f"完成后可以打开新集点 '🧠 AI 拆分镜' 拆出 {duration_sec // 10} 段视频。"
         )
         self.log.emit(msg)
+
+    def _on_extract_last_frame(self):
+        """手动工作流:选一个视频 → 抽末帧 → 存进 assets/ → 当下一段首帧参考图。"""
+        from . import frame_tools
+        if not frame_tools.ffmpeg_available():
+            QMessageBox.warning(
+                self, "缺少 ffmpeg",
+                "抽末帧需要系统装了 ffmpeg。\n\n"
+                "安装后重试:\n"
+                "  Windows: 去 ffmpeg.org 下载,解压后把 bin 加进 PATH\n"
+                "  Mac: brew install ffmpeg\n"
+                "  Linux: sudo apt install ffmpeg"
+            )
+            return
+        if not self.pid:
+            QMessageBox.information(self, "提示", "请先选项目"); return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择要抽末帧的视频(通常是上一段生成/下载的视频)",
+            "", "视频文件 (*.mp4 *.mov *.mkv *.webm *.avi);;所有文件 (*.*)"
+        )
+        if not path:
+            return
+
+        src = Path(path)
+        assets = ST.project_dir(self.pid) / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        out = assets / f"{src.stem}_末帧.png"
+        # 重名就加序号,别覆盖
+        i = 2
+        while out.exists():
+            out = assets / f"{src.stem}_末帧_{i}.png"; i += 1
+
+        ok, info = frame_tools.extract_frame(str(src), str(out), "last")
+        if ok:
+            self.log.emit(f"🎬 {info}")
+            box = QMessageBox(self)
+            box.setWindowTitle("末帧已抽出")
+            box.setIcon(QMessageBox.Information)
+            box.setText(
+                f"末帧已存到项目素材里:\n{out.name}\n\n"
+                "把这张图当【下一段的首帧参考图】上传,镜头就能接上。\n"
+                "(它也已经在 assets/ 里,画布上能直接当参考图连线)"
+            )
+            open_btn = box.addButton("📂 打开素材文件夹", QMessageBox.ActionRole)
+            box.addButton("好", QMessageBox.AcceptRole)
+            box.exec()
+            if box.clickedButton() == open_btn:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(assets)))
+        else:
+            QMessageBox.warning(self, "抽末帧失败", info)
+            self.log.emit(f"⚠ 抽末帧失败:{info}")
 
 
 class CharactersView(_AssetGridView):
