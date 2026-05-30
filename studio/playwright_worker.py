@@ -665,15 +665,37 @@ class Worker(QObject):
         模式 B (豆包):upload_btn 是 dropdown menuitem,点了才弹原生 file chooser。
                      需先点 upload_trigger 打开菜单,再点 menuitem,
                      用 page.expect_file_chooser 抓 chooser 后 set_files。
-
-        策略:
-        1. 先扫 upload_btn selectors,找其中 input[type=file] 部分,试 set_input_files
-        2. 失败 → 走 chooser 模式:expect_file_chooser + click trigger + click menuitem
-        3. 都失败返回 False(worker 退化到打印 "请手动上传")
         """
         page = session.page()
         if not page or not profile.upload_btn: return False
-        paths = [str(f) for f in (files if isinstance(files, list) else [files])]
+        raw_paths = [str(f) for f in (files if isinstance(files, list) else [files])]
+
+        # ─── 0. 校验文件:不存在 / 0 字节会让站点上传永远卡 0% ───
+        paths = []
+        for p in raw_paths:
+            fp = Path(p)
+            if not fp.exists():
+                self.log.emit(f"  ⚠ 上传文件不存在,跳过: {p}")
+                continue
+            try:
+                sz = fp.stat().st_size
+            except Exception:
+                sz = 0
+            if sz < 100:
+                self.log.emit(f"  ⚠ 文件过小/疑似空 ({sz}B),跳过: {fp.name}")
+                continue
+            paths.append(p)
+            self.log.emit(f"  ↳ 待上传: {fp.name} ({sz // 1024}KB)")
+        if not paths:
+            self.log.emit("  ⚠ 没有有效文件可上传(全部不存在或为空) — 检查参考图路径")
+            return False
+
+        # 诊断:页面上有几个 file input(0 个 = 选择器/站点 DOM 不对)
+        try:
+            n_inputs = page.eval_on_selector_all('input[type="file"]', "els => els.length")
+            self.log.emit(f"  ↳ 页面 file input 数量: {n_inputs}")
+        except Exception:
+            pass
 
         # 拆分多 selector(逗号分隔)
         all_sels = [s.strip() for s in profile.upload_btn.split(',') if s.strip()]
@@ -685,9 +707,26 @@ class Worker(QObject):
             try:
                 if page.query_selector(sel):
                     page.set_input_files(sel, paths, timeout=5000)
+                    # React-safe:主动派发 input/change,确保 SPA 的上传 handler 接到
+                    try:
+                        page.eval_on_selector(sel, """el => {
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""")
+                    except Exception:
+                        pass
                     self.log.emit(f"  ↳ 上传模式 A (set_input_files): {sel[:50]}")
+                    # 验证有没有冒出上传预览/缩略图(说明站点真的接住了文件)
+                    if self._verify_upload_appeared(page):
+                        self.log.emit("  ↳ ✓ 检测到上传预览,文件已被站点接收")
+                    else:
+                        self.log.emit(
+                            "  ⚠ 已注入但没检测到上传预览 —— 可能注入到了错误的隐藏 input,"
+                            "或站点上传卡住(若进度条停 0%,多半是站点/网络端)"
+                        )
                     return True
-            except Exception:
+            except Exception as e:
+                self.log.emit(f"  ↳ 模式 A 失败 ({sel[:30]}): {e}")
                 continue
 
         # ─── 模式 B: click 触发 + 抓 file chooser ───
@@ -715,11 +754,38 @@ class Worker(QObject):
                 fc = fc_info.value
                 fc.set_files(paths)
                 self.log.emit(f"  ↳ 上传模式 B (file_chooser): {len(paths)} 个文件")
+                if self._verify_upload_appeared(page):
+                    self.log.emit("  ↳ ✓ 检测到上传预览,文件已被站点接收")
+                else:
+                    self.log.emit("  ⚠ chooser 已交付文件但没检测到预览,可能站点上传卡住")
                 return True
             except Exception as e:
                 self.log.emit(f"  ↳ chooser 模式失败: {e}")
                 return False
 
+        return False
+
+    def _verify_upload_appeared(self, page, timeout_ms: int = 4000) -> bool:
+        """注入文件后,轮询看页面有没有冒出上传预览/缩略图。
+        有 = 站点接住了文件(哪怕还在传);没有 = 注入可能没生效。
+        纯诊断用,不影响上传本身的成败判断。"""
+        import time as _t
+        selectors = [
+            '[class*="upload-preview"]', '[class*="FilePreview"]',
+            '[class*="image-preview"]', '[class*="ImagePreview"]',
+            '[class*="attachment"]', '[class*="thumbnail"]',
+            '[class*="file-item"]', '[class*="uploaded"]',
+            'img[src^="blob:"]', 'img[src^="data:image"]',
+        ]
+        deadline = _t.time() + timeout_ms / 1000.0
+        while _t.time() < deadline:
+            for s in selectors:
+                try:
+                    if page.query_selector(s):
+                        return True
+                except Exception:
+                    pass
+            _t.sleep(0.3)
         return False
 
     def _download_via_http(self, src_url: str, save_dir: Path,
