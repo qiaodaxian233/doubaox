@@ -670,6 +670,13 @@ class Worker(QObject):
         if not page or not profile.upload_btn: return False
         raw_paths = [str(f) for f in (files if isinstance(files, list) else [files])]
 
+        # 多账号关键:上传前把本账号页面拉到前台,避免被 Chrome 当后台窗口降频
+        # (后台窗口的上传 XHR 会被掐到 0%)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
         # ─── 0. 校验文件:不存在 / 0 字节会让站点上传永远卡 0% ───
         paths = []
         for p in raw_paths:

@@ -122,6 +122,12 @@ class AccountSession:
                 args=[
                     "--no-default-browser-check",
                     "--disable-blink-features=AutomationControlled",
+                    # ↓ 多账号关键:禁后台标签/窗口降频,否则非前台账号的上传 XHR
+                    #   会被 Chrome 掐到几乎不动 → 上传进度条永远卡 0%
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=CalculateNativeWinOcclusion",
                 ],
             )
         except Exception:
@@ -132,6 +138,14 @@ class AccountSession:
                 viewport={"width": 1366, "height": 900},
                 accept_downloads=True,
                 downloads_path=str(self.downloads_dir),
+                args=[
+                    "--no-default-browser-check",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=CalculateNativeWinOcclusion",
+                ],
             )
         # 注册 close 回调 — 用户手关浏览器时同步 online=False
         try:
