@@ -1,0 +1,252 @@
+// ==UserScript==
+// @name         🎬 噬渊·豆包投喂(成品提示词 → 填入+发送+配图)
+// @namespace    luanshi_qingshu_doubao
+// @version      0.1.0
+// @description  在豆包/即梦视频生成页:把故事板四字段套成品提示词模板,逐段一键填入输入框+(可选)附上本地配图+发送。配套「故事段提取工具」。
+// @author       乱世情书 Project
+// @match        *://www.doubao.com/*
+// @match        *://doubao.com/*
+// @match        *://jimeng.jianying.com/*
+// @match        *://*.jianying.com/*
+// @match        *://dreamina.com/*
+// @match        *://*.dreamina.com/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @run-at       document-idle
+// @noframes
+// ==/UserScript==
+
+/* ============================================================
+ *  ⚙ CONFIG —— 唯一需要按实时页面微调的地方
+ *  若脚本没反应,多半是下面某个选择器变了。F12 选中元素 → 改这里。
+ * ============================================================ */
+const SEL = {
+  textarea : 'textarea.semi-input-textarea',          // 发消息输入框
+  sendBtn  : '#flow-end-msg-send',                    // 发送按钮
+  fileInput: 'input[type="file"]',                    // 上传用的文件 input(可能隐藏)
+  uploadMenuText: '上传文件或图片',                    // 没找到 fileInput 时,点这个菜单项把它唤出来
+};
+
+(function () {
+  'use strict';
+  if (window.top !== window.self) return;
+
+  const DEFAULT_SOURCE = "# 《噬渊》第 1 集 · 20 段 · 全字段源（喂「故事段提取工具」）\n\n> 工具按「# 段N ·《标题》· 时间 · 预告片：加/不加」拆段，自动抓四字段套成品提示词模板。\n> 一份上传即得 20 段；事件段+过渡段已合并齐全。\n\n# 段1 ·《山顶练剑》· 拂晓 · 预告片：不加\n\"主体描述\":\"拂晓,苍梧宗后山山巅,云海翻涌。十六岁粗布弟子服少年黎尘独自立于崖边的青石上,手持一柄朴素铁剑,迎着熹微晨光一招一式地练剑,动作凌厉而专注,呼吸在清冷空气里凝成白雾。他清贫隐忍,却日复一日在无人的山顶苦练。一套剑法收势,他握剑而立,望向脚下云海中若隐若现的宗门。\"\n\"镜头语言\":\"大远景固定展示拂晓山巅云海与练剑孤影,中景侧拍黎尘运剑、呼吸白雾,近景特写握剑的手与划破空气的剑尖,近景推进黎尘专注坚定的脸,全景收剑定式望向山下宗门。一个连续的练剑动作。\"\n\"环境光影\":\"拂晓冷蓝微光中透出第一缕金色晨光,山巅云海翻涌,清冷、孤寂、有志气,光线由冷转暖。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布衣料、铁剑质感、呼吸白雾与云海,东方仙山细节,虚幻5电影CG。\"\n\n# 段2 ·《收剑下山》· 拂晓→清晨 · 预告片：不加\n\"主体描述\":\"拂晓微光中,十六岁粗布弟子服少年黎尘在山巅收剑入鞘,望了一眼脚下云海中的宗门。他走到一旁,扛起一个装满杂物的竹筐,转身沿蜿蜒的青石山道独自向下走去。天色一点点亮起来,从冷蓝转为清晨的金色,他单薄的身影在长长的石阶上越走越远。\"\n\"镜头语言\":\"中景固定黎收剑入鞘望向山下,中景他扛起竹筐,背影跟拍他转身沿石阶起步下行,全景他沿蜿蜒山道下行、晨光渐亮。全程一个连续的'收剑—扛筐—下行'动作,跟拍。\"\n\"环境光影\":\"拂晓冷蓝微光渐转清晨金色,山巅云海,青石山道泛着晨光,清幽寂静。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布衣料、竹筐、晨雾,东方仙山石阶细节,虚幻5电影CG。\"\n\n# 段3 ·《山道受辱》· 清晨 · 预告片：加\n\"主体描述\":\"清晨,苍梧宗的石阶山道上,十六岁粗布弟子服少年黎尘背着装满杂物的竹筐独自下行,身影单薄。迎面走来一名华贵锦袍、神情傲慢的内门弟子商珏,抬脚踢翻黎尘的竹筐,杂物四散滚落一地。周围弟子哄笑。黎尘没有还嘴,默默蹲下身一件件捡拾,他的手缓缓捏紧成拳又强忍着松开——眼里有火,但他压下去了。\"\n\"镜头语言\":\"全景跟拍黎尘扛筐下行,横移中景捕捉商珏踢翻竹筐的瞬间,略带俯视的中景强调黎尘蹲下捡拾的卑微,最后特写推近他捏紧又松开的拳头。\"\n\"环境光影\":\"清晨明亮的自然光,山道两侧青翠山林,石阶泛着晨光,远处可见云海与宗门飞檐。光线明亮但人物处境压抑,形成反差。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布衣料,东方仙山石阶细节,虚幻5电影CG质感。\"\n\n# 段4 ·《穿廊去后院》· 清晨→午后 · 预告片：不加\n\"主体描述\":\"清晨,黎尘在山道上捡完散落的杂物、重新背起竹筐,起身。他穿过苍梧宗的木构廊道与回廊,光影在身上斑驳掠过。一路上,挑水、扫地的其他杂役弟子各自忙碌,黎尘低着头快步穿行而过。天色渐渐升到午后,他走近一处简陋的膳房后院门口。\"\n\"镜头语言\":\"中景黎捡完杂物起身背筐,跟拍他穿过斑驳光影的宗门廊道,中景路过忙碌的杂役、黎低头快走,全景他走近简陋膳房后院门口。一个连续的'穿行'动作。\"\n\"环境光影\":\"清晨转午后的温暖天光,木廊回廊投下斑驳光影,宗门清幽日常的烟火气。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、东方木构廊道细节、斑驳光影,虚幻5电影CG。\"\n\n# 段5 ·《厨房给包子》· 午后 · 预告片：不加\n\"主体描述\":\"午后,苍梧宗简陋的膳房后院,柴堆与水缸旁,十六岁粗布弟子服少年黎尘正在干活。他警惕地左右张望,确认四下无人。土墙墙角,一个约八岁、脸上还沾着灶灰、瘦瘦小小的女童小满怯生生探出头。黎尘走过去,从怀里掏出一个还冒着热气、用粗布裹着的白面包子,轻声说'拿着,快吃',塞进小满的小手里。小满双手捧着包子抬起头,眼睛一下子亮了。黎尘温柔地摸了摸她的头,微笑着说'哥哥吃过了'——其实他自己饿着肚子。\"\n\"镜头语言\":\"全景固定/缓摇展示后院与正在干活、警惕张望的黎尘,中景从墙角探出怯生生的小满,近景特写黎尘把热包子塞进小满捧着的小手,中景固定小满抬头眼睛发亮、黎尘摸头微笑。全部在膳房后院,不换场景。\"\n\"环境光影\":\"后院午后温暖的金色侧光斜照,土墙、柴堆、水缸投下柔和的阴影,温馨、有人间烟火气,温暖中藏着清贫的心酸。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布衣料、儿童身材比例正确、冒热气的包子,东方简朴后院细节,虚幻5电影CG。\"\n\n# 段6 ·《起身进膳堂》· 午后 · 预告片：不加\n\"主体描述\":\"午后膳房后院,黎尘蹲身摸了摸小满的头、轻轻拍了拍她,然后起身。他转身穿过后院,走了两步又回头望了一眼正捧着包子吃的小满,眼神温和。随后他穿过院子,走向高大的膳堂门廊,在门口整理了一下粗布衣襟,低着头走了进去——暖金的后院光,渐渐被膳堂室内的冷色天光取代。\"\n\"镜头语言\":\"中景黎蹲身拍小满、起身,跟拍他转身穿过后院、回望一眼小满,中景他走向膳堂门廊,全景他在门口整衣、低头入内(暖光转冷)。一个连续的'起身—穿院—入堂'动作。\"\n\"环境光影\":\"后院午后暖金侧光,渐过渡到膳堂门内的冷色天光,冷暖在门口交界,情绪由温暖转向压抑。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、东方木构门廊、冷暖光交界,虚幻5电影CG。\"\n\n# 段7 ·《膳堂受罚》· 午后 · 预告片：加\n\"主体描述\":\"午后,苍梧宗膳堂内,一排杂役弟子垂手低头站着,十六岁粗布弟子服少年黎尘站在最末位。高台上一名严厉的管事长老正在训话,点名训斥黎尘'昨日扫洒不净',当众下罚:'罚你今夜把柴房的柴全部劈完,劈不完不许歇息!'黎尘垂手应'是',声音很轻。他飞快抬眼扫向高台一侧端坐喝茶、似笑非笑看着他的华贵锦袍弟子商珏,随即又迅速低下头,沉默隐忍。\"\n\"镜头语言\":\"全景固定展示膳堂内等级分明的站位,中景推进管事训斥并当众下罚,过肩缓移从黎尘视角望向高台端坐的商珏,近景固定黎尘垂手应'是'、迅速低头。全部在膳堂内部,不换场景。\"\n\"环境光影\":\"膳堂室内冷色天光从高窗斜射,粗大木柱投下阴影,庄严肃穆,等级森严的压抑感。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布/锦袍衣料,东方木构大堂细节,虚幻5电影CG。\"\n\n# 段8 ·《入夜·去柴房》· 午后→夜 · 预告片：不加\n\"主体描述\":\"黎尘走出膳堂,抬头看了看天——日头已经偏西,天色开始暗下来。他没有歇息,默默朝后山柴房的方向走去。他穿过空荡的宗门道路,夕阳把他的影子拉得很长。天色越来越暗,暖金的黄昏一点点沉成清冷的银蓝,他单薄的身影独自走向后山。暮色四合时,他走近了柴房和那一大堆等着他劈的柴薪,一弯月亮升了起来。\"\n\"镜头语言\":\"中景黎走出膳堂抬头看天色,跟拍他穿过空荡宗门道路、长长的夕照影子,全景他独自走向后山、天色压暗,全景暮色四合走近柴房与成堆柴薪。一个连续的'走向柴房'动作,用天光从黄昏到夜演时间。\"\n\"环境光影\":\"开场暖金黄昏、夕照拉长影子,逐渐沉为清冷银蓝的夜色,一弯月初上,孤独。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、夕照与月夜光影过渡、宗门建筑剪影,虚幻5电影CG。\"\n\n# 段9 ·《柴房劈柴》· 夜 · 预告片：不加\n\"主体描述\":\"夜晚,苍梧宗后山柴房外的空地,清冷的月光洒下。十六岁少年黎尘独自在一大堆柴薪前劈柴——这是膳堂罚他今夜的活。他奋力挥斧,一下一下劈开木柴,粗布衣被汗水浸透,身影孤单。他握着斧柄的手,虎口已经磨破、起了血泡,微微发抖,但他没停。夜深了,他终于劈完最后一根,精疲力竭地瘫坐在柴堆旁喘息,抹去额头的汗,抬头望了一眼天上清冷的月。\"\n\"镜头语言\":\"全景展示月夜下黎尘独自劈柴的孤单身影与成堆柴薪,中景捕捉他奋力挥斧、汗透衣衫,近景特写他磨破起血泡、微微发抖的手,最后全景/中景他劈完瘫坐喘息、抹汗望月。全部在柴房外空地。\"\n\"环境光影\":\"清冷的月光是主光源,银蓝色调,柴堆与人物在月下投出长长的阴影,孤独而有坚韧的质感。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤汗水与粗布衣料、木柴质感、磨破的手,虚幻5电影CG。\"\n\n# 段10 ·《劈完进屋》· 夜→深夜 · 预告片：不加\n\"主体描述\":\"夜深,黎尘从柴堆旁瘫坐喘息处撑着膝盖、疲惫地站起身。他弯腰抱起一捆刚劈好的柴薪,走到柴房门前,推开吱呀作响的木门走了进去。屋里一片漆黑,他放下柴,摸索着点亮了那盏如豆的油灯——昏黄温暖的光,一点点在狭小的柴房里亮起来,驱散了门外清冷的月色。\"\n\"镜头语言\":\"全景黎撑膝起身,中景他抱起一捆柴,跟拍他推开柴房木门走进去,中景屋内他放下柴、点亮油灯、暖光亮起。一个连续的'起身—抱柴—进门—点灯'动作,月夜银蓝转油灯暖。\"\n\"环境光影\":\"门外清冷月夜银蓝,门内由全黑到油灯昏黄暖光亮起,冷暖在门口交界,孤独里透出一点温暖。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、木柴、油灯点亮的光晕、冷暖光交界,虚幻5电影CG。\"\n\n# 段11 ·《柴房夜读》· 深夜 · 预告片：不加\n\"主体描述\":\"深夜,黎尘劈完了罚他的柴,精疲力竭地回到简陋的柴房。他没有立刻睡下——而是盘坐在破草席上,借着一盏如豆的昏黄油灯微光,小心翼翼地翻看那本翻烂的线装破旧剑谱,神情专注。身后墙上是他用炭笔密密麻麻划下的练剑天数记号,已经划满半面墙。再累,他也要看一会儿剑谱。夜更深了,他困意渐浓,打了个哈欠,眼皮越来越沉。\"\n\"镜头语言\":\"中景推进黎尘借灯读谱,近景横移扫过墙上密密麻麻的练剑记号,近景固定黎尘油灯映照的专注侧脸,中景固定黎尘困意袭来打哈欠眼皮垂下。全部在柴房内部。\"\n\"环境光影\":\"柴房内昏黄如豆的油灯是唯一光源,大面积温暖摇曳的阴影,氛围孤独而有一种倔强的温暖。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细油灯光晕与粗布质感、墙上炭笔记号,虚幻5电影CG。\"\n\n# 段12 ·《困极躺下》· 深夜 · 预告片：不加\n\"主体描述\":\"深夜柴房,黎尘困得不行,打着哈欠合上了那本翻烂的破旧剑谱。他小心翼翼地把剑谱揣进怀里、贴身护好,才慢慢躺到破草席上,侧身蜷起。如豆的油灯越来越微弱,昏黄的暖光一点点黯淡下去,黎尘的呼吸渐渐均匀,睡着了。画面随着暖光的减弱,慢慢变得朦胧、温暖——准备滑入一个旧梦。\"\n\"镜头语言\":\"中景黎打哈欠合上剑谱,近景他把剑谱揣进怀里护好,中景他躺到草席上侧身蜷起,近景固定油灯渐弱、黎呼吸均匀睡去、暖光黯淡转朦胧(为段13梦境淡入做准备)。\"\n\"环境光影\":\"昏黄油灯暖光逐渐转弱、变朦胧,大面积温暖阴影,氛围安宁、疲惫、有一点要做梦的柔。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细油灯光晕渐弱、粗布质感,结尾微微柔焦朦胧,虚幻5电影CG。\"\n\n# 段13 ·《梦境惊醒》· 深夜 · 预告片：不加\n\"主体描述\":\"朦胧温暖的回忆:一个看不清脸的模糊女人的背影(母亲)在简朴的灶台前忙碌,哼着不成调的歌,五六岁的小黎尘拽着她的衣角仰望。画面笼罩在柔焦过曝的暖金色里如旧梦。灶火橙红的光晕渐渐暗下,画面平滑过渡——油灯的火苗忽然跳动了一下,熄灭了,画面陷入黑暗。少年黎尘在漆黑中猛然睁眼惊醒,怔了怔,摸黑重新躺下翻了个身。\"\n\"镜头语言\":\"柔焦中景跟拍母亲背影与拽衣角的小黎尘,柔焦近景小黎尘仰望模糊的母亲,转场镜头油灯火苗跳动熄灭、暖光退去入黑,近景固定黑暗中黎尘惊醒睁眼躺下。用淡入淡出/柔化转场平滑衔接,不硬切。\"\n\"环境光影\":\"梦境段柔焦过曝暖金、灶火橙红光晕、边缘虚化如旧梦;过渡段暖光渐退;结尾油灯熄灭画面入黑,只有极微弱环境光勾勒轮廓。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,梦境段柔焦朦胧暖金质感,虚幻5电影CG。\"\n\n# 段14 ·《天亮·被唤去静室》· 夜→次日清晨 · 预告片：不加\n\"主体描述\":\"次日清晨,夜过去了。柴房外,黎尘在一口旧水缸边掬水洗脸,清醒过来。这时一名穿着内门弟子服的师兄走来,对他说'玄朴真人叫你去一趟静室'。黎尘怔了一下,应了声'是',整理了一下身上的青灰粗布弟子服。随后他穿过清晨明净天光下的宗门道路,朝玄朴真人的静室方向走去,神情里带着一丝不安。\"\n\"镜头语言\":\"中景黎在水缸边洗脸,中景师兄走来传话,近景黎应'是'整衣,全景黎穿过清晨明亮的宗门道路走向静室。一个连续的'洗漱—被唤—前往'动作,黎明转清晨。\"\n\"环境光影\":\"开场黎明微光偏冷,渐转清晨明净通透的天光,宗门清晨清新安静。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、水珠、清晨天光、东方宗门建筑,虚幻5电影CG。\"\n\n# 段15 ·《静室审视》· 次日 · 预告片：加\n\"主体描述\":\"次日,玄朴真人的静室内,白发花白长须的化神长老玄朴端坐蒲团,沉静而深邃地凝视着垂手立在下方的黎尘,看了很久,久到黎尘有些不安。玄朴像在确认什么似的端详他的眼睛。黎尘垂眼,不安地回答'弟子……一切都好'。玄朴久久不语,最后摆了摆手让他退下。镜头最后停在玄朴独自望向窗外后山方向、眉头微蹙——像是想起了某件不愿想起的事。\"\n\"镜头语言\":\"中景固定黎尘垂手立于下方、玄朴端坐凝视,反打推进玄朴深邃端详的面部,近景固定黎尘不安垂眼回答,中景缓移玄朴摆手后独自望向窗外后山眉头微蹙。全部在静室内部。\"\n\"环境光影\":\"静室内柔和的自然窗光从木格窗棂透入,香炉青烟袅袅有体积感,清幽肃静明净,平静中藏着不易察觉的凝重。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与道袍质感、香炉青烟,东方道修静室细节,虚幻5电影CG。\"\n\n# 段16 ·《退出·走向广场》· 次日 · 预告片：不加\n\"主体描述\":\"次日,黎尘垂手退出玄朴真人的静室,轻轻带上门、转身。他穿过宗门的廊道与石阶,心事重重地往回走,师父那意味深长的注视还压在心头。天光渐渐明亮,他走向开阔的露天广场——而前方广场上,华贵锦袍的商珏正带着几名弟子,似笑非笑地拦在那里,像是早就等着他。黎尘脚步一顿。\"\n\"镜头语言\":\"中景黎垂手退出静室、带门转身,跟拍他穿过宗门廊道石阶、心事重重,全景他走向明亮广场,中景/全景前方商珏一伙拦在广场上、黎脚步一顿。一个连续的'退出—穿行—走向广场'动作,柔光转明亮。\"\n\"环境光影\":\"静室柔和窗光渐过渡到广场开阔明亮的午后日光,由清幽转向开阔刺眼,暗示压抑转向冲突。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、东方宗门建筑、由柔到亮的光影,虚幻5电影CG。\"\n\n# 段17 ·《广场撕谱》· 次日午后 · 预告片：加\n\"主体描述\":\"次日午后,苍梧宗开阔的露天广场,华贵锦袍的商珏带着几名弟子堵住黎尘,一把夺过他怀里那本翻烂的破旧剑谱,当众嗤笑着撕成两半,抛向空中,泛黄的碎纸片纷纷飘落。'就你?'黎尘猛地抬头,这一次他没有立刻低头——他死死盯着商珏,胸口剧烈起伏,眼里是压抑的怒火。气氛凝住。但他最终还是弯下腰,一片一片去捡那些碎纸。\"\n\"镜头语言\":\"中景固定商珏夺过并撕碎剑谱,中景推进商珏抛洒碎纸的轻蔑,特写慢镜泛黄碎纸片飘落,中景固定黎尘猛抬头死死盯着商珏、胸口起伏后最终弯腰捡碎纸。全部在广场。\"\n\"环境光影\":\"广场明亮的午后阳光,开阔通透,光影分明。明亮的环境与黎尘屈辱的处境形成刺眼对比。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤与粗布/锦袍衣料、飘落的碎纸,东方宗门广场建筑细节,虚幻5电影CG。\"\n\n# 段18 ·《独自上后山》· 次日午后→黄昏 · 预告片：不加\n\"主体描述\":\"次日午后,广场上,黎尘被管事差去打扫后山那座废弃多年的旧神殿,接过一把竹枝扫帚。他提着扫帚,独自沿着荒草没膝的后山小路往上走,四下无人。天色一点点转向黄昏,暖金的夕照渐渐沉暗。他的脚步踩过荒草和碎石,远处那座荒废歪斜的旧神殿剪影越来越近,一种说不出的不祥感弥漫开来。暮色幽暗中,黎尘走到了歪斜的神殿门前。\"\n\"镜头语言\":\"中景黎在广场被差遣、接过扫帚,全景跟拍他提扫帚沿荒草小路上后山,近景脚步踩过荒草碎石,中景/全景他停步望向越来越近的旧神殿剪影、走到歪斜殿门前。一个连续的'被差—上山—抵达'动作,午后转黄昏。\"\n\"环境光影\":\"午后日光渐沉为黄昏暖金、再转幽暗,荒草小径、远处神殿剪影,由日常的暖渐渐染上不祥的冷暗。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、荒草碎石、黄昏光影、荒废神殿剪影,虚幻5电影CG。\"\n\n# 段19 ·《旧神殿唤醒》· 次日黄昏 · 预告片：不加\n\"主体描述\":\"次日黄昏,苍梧宗后山一座废弃多年的旧神殿内部,荒草藤蔓,厚厚的灰尘和碎石。十六岁少年黎尘提着一把竹枝扫帚,走进幽暗的殿内深处打扫,灰尘在暮色斜射的光柱里浮动。他扫到最深处的角落,扫帚碰到了一个半埋在碎石里、蒙满灰尘的黑色球体。他蹲下,好奇地伸手去拂掉球上的灰——指缝里一道被纸划破的伤口,一滴血正好滴落在黑球表面。那颗死寂了多年的黑球极轻微地震动了一下,球体深处亮起一点幽冷的暗金微光,像在亿万里黑暗中睁开的一只眼睛。画面切黑。\"\n\"镜头语言\":\"全景跟拍黎尘提扫帚走进幽暗神殿深处,中景横移黎尘扫到蒙灰黑球,近景推进黎尘蹲下伸手拂灰、指缝渗血,大特写急推血滴落黑球、微震、深处幽光睁开,定格后切黑。全部在神殿内部。\"\n\"环境光影\":\"神殿内暮色冷光从破损殿顶斜射形成丁达尔光柱,尘埃浮动,大面积幽暗阴影;结尾黑球深处一点克制的暗金微光,诡异不祥,不爆闪。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细角色皮肤布料、神殿尘埃光柱、黑球表面蒙灰质感,虚幻5电影CG。\"\n\n# 段20 ·《集末尾镜》· 次日夜 · 预告片：不加\n\"主体描述\":\"接上一幕的切黑——漆黑荒废的旧神殿深处,那颗死寂多年的黑球上,一道暗红的血迹未干,球体深处亮着一点幽冷的暗金微光,像一只刚刚睁开的眼睛。这点幽光极轻微地、像呼吸/心跳般搏动了一下。镜头缓缓拉远,这点孤独诡异的幽光,沉在亿万里黑暗般的荒废神殿最深处。最后镜头切到神殿之外:后山夜色沉沉,荒废的殿宇剪影孤零零立在月下,一切归于死寂。\"\n\"镜头语言\":\"大特写固定黑球深处的暗金幽光,大特写幽光极轻微搏动一下,缓缓拉远幽光沉在漆黑神殿深处,空镜切到神殿外后山夜色殿宇剪影。克制、留余韵。\"\n\"环境光影\":\"漆黑幽暗,光只来自黑球深处那一点暗金微光,神秘、不祥、克制;结尾神殿外幽蓝月夜、殿宇剪影,死寂。\"\n\"画质修饰\":\"8K超高清,电影级HDR,2D写实国漫,超精细黑球表面质感与血迹、深处一点幽光、荒废神殿与月夜剪影,虚幻5电影CG。\"\n";     // 内置《噬渊》第1集20段全字段源
+
+  /* ---------- 持久化 ---------- */
+  const store = {
+    get: (k, d) => { try { const v = GM_getValue(k); return v === undefined ? d : v; } catch (e) { return d; } },
+    set: (k, v) => { try { GM_setValue(k, v); } catch (e) {} },
+  };
+  let SOURCE = store.get('src', DEFAULT_SOURCE);
+  let MODE   = store.get('mode', 'mark');      // mark | all | none
+  let HEAD   = store.get('head',
+`按照这个故事板参考图1创作电影级东方玄幻CG。
+动态摄影机运动。
+镜头中不出现摄影设备。
+{预告片}16:9。
+8K。`);
+  let NEG    = store.get('neg',
+`负面提示词：
+低清晰度、模糊、乱码、错误文字、低质量、廉价特效、欧美魔幻风、低幼卡通风、水印、logo、现代机甲风、人物崩坏、重复场景、摄影设备入镜。
+注意不要把摄像机录像放到里面，16:9`);
+  let EP = '1';
+  let IMAGES = {};   // 段号 -> File
+  let SEGS = [];
+
+  /* ---------- 解析(与网页工具同一套逻辑) ---------- */
+  function parse(text) {
+    const epM = text.match(/第\s*(\d+)\s*集/); EP = epM ? epM[1] : '1';
+    const headRe = /^#+[^\n]*《([^》]+)》[^\n]*$/gm;
+    const heads = []; let m;
+    while ((m = headRe.exec(text))) heads.push({ title: m[1].trim(), line: m[0], end: headRe.lastIndex, start: m.index });
+    const out = [];
+    for (let i = 0; i < heads.length; i++) {
+      const h = heads[i];
+      const block = text.slice(h.end, i + 1 < heads.length ? heads[i + 1].start : text.length);
+      const get = k => { const mm = block.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*)"')); return mm ? mm[1].trim() : ''; };
+      const zhuti = get('主体描述');
+      if (!zhuti) continue;
+      const numM = h.line.match(/段\s*(\d+)/); const num = numM ? +numM[1] : out.length + 1;
+      let time = ''; const after = (h.line.split('》')[1] || '').split('·').map(s => s.trim()).filter(Boolean);
+      for (const p of after) { if (!/预告片|单地点|类型/.test(p)) { time = p; break; } }
+      const scope = h.line + '\n' + block; let trailer = '不加';
+      if (/不加\s*预告片|预告片\s*[:：]\s*不加/.test(scope)) trailer = '不加';
+      else if (/加\s*预告片|预告片\s*[:：]\s*加/.test(scope)) trailer = '加';
+      out.push({ num, title: h.title, time, trailer, f: {
+        主体描述: zhuti, 镜头语言: get('镜头语言'), 环境光影: get('环境光影'), 画质修饰: get('画质修饰') } });
+    }
+    out.sort((a, b) => a.num - b.num);
+    return out;
+  }
+  function build(seg) {
+    const inc = MODE === 'all' ? true : MODE === 'none' ? false : seg.trailer === '加';
+    const head = HEAD.replace('{预告片}', inc ? '10秒电影预告片。\n' : '');
+    const story = '故事 =\n' + ['主体描述', '镜头语言', '环境光影', '画质修饰']
+      .filter(k => seg.f[k]).map(k => `"${k}":"${seg.f[k]}"`).join('\n');
+    return head + '\n\n' + story + '\n\n' + NEG;
+  }
+
+  /* ---------- 操作豆包页面 ---------- */
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  function setNativeValue(el, value) {
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function fill(text) {
+    const ta = document.querySelector(SEL.textarea);
+    if (!ta) { toast('✗ 没找到输入框(改 CONFIG.SEL.textarea)'); return false; }
+    ta.focus(); setNativeValue(ta, text); return true;
+  }
+  async function attach(file) {
+    if (!file) return false;
+    let inp = document.querySelector(SEL.fileInput);
+    if (!inp) {
+      const mi = [...document.querySelectorAll('[role="menuitem"],div,button')]
+        .find(e => e.textContent && e.textContent.trim() === SEL.uploadMenuText);
+      if (mi) { mi.click(); await sleep(400); inp = document.querySelector(SEL.fileInput); }
+    }
+    if (!inp) { toast('✗ 没找到上传入口,请手动上传配图'); return false; }
+    const dt = new DataTransfer(); dt.items.add(file); inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  function send() {
+    const b = document.querySelector(SEL.sendBtn);
+    if (!b) { toast('✗ 没找到发送键(改 CONFIG.SEL.sendBtn)'); return false; }
+    if (b.getAttribute('aria-disabled') === 'true' || b.dataset.disabled === 'true') { toast('⚠ 发送键未就绪'); return false; }
+    b.click(); return true;
+  }
+  async function fillSend(seg) {
+    fill(build(seg));
+    if (IMAGES[seg.num]) { await sleep(200); await attach(IMAGES[seg.num]); await sleep(1200); }
+    await sleep(400); send();
+  }
+
+  /* ---------- 面板 UI ---------- */
+  let toastT;
+  function toast(msg) {
+    let t = document.getElementById('sy-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'sy-toast'; document.body.appendChild(t);
+      Object.assign(t.style, { position: 'fixed', left: '50%', bottom: '90px', transform: 'translateX(-50%)',
+        background: '#161b22', color: '#e6edf3', border: '1px solid #2a323d', padding: '8px 14px',
+        borderRadius: '10px', fontSize: '13px', zIndex: 999999, boxShadow: '0 8px 30px rgba(0,0,0,.5)' }); }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(toastT); toastT = setTimeout(() => t.style.opacity = '0', 1800);
+  }
+
+  const css = `
+  #sy-panel{position:fixed;right:18px;bottom:18px;width:340px;max-height:70vh;display:flex;flex-direction:column;
+    background:#0f1115;color:#e6edf3;border:1px solid #2a323d;border-radius:14px;z-index:999998;
+    font:13px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.5);overflow:hidden}
+  #sy-panel.min{height:44px;max-height:44px}
+  #sy-hd{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:move;background:#161b22;border-bottom:1px solid #2a323d;user-select:none}
+  #sy-hd b{font-family:"Songti SC",serif;letter-spacing:.5px}
+  #sy-hd .sp{flex:1}
+  #sy-hd button{cursor:pointer;background:transparent;border:0;color:#8b96a5;font-size:15px}
+  #sy-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:9px}
+  #sy-panel.min #sy-body{display:none}
+  .sy-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .sy-btn{cursor:pointer;border:1px solid #2f8f79;background:linear-gradient(180deg,#4cc3a8,#2f8f79);color:#06231d;font-weight:700;border-radius:8px;padding:5px 10px;font-size:12px}
+  .sy-btn.g{background:transparent;color:#4cc3a8;border-color:#2a323d}
+  .sy-btn:hover{filter:brightness(1.08)}
+  #sy-body select,#sy-body input,#sy-body textarea{background:#1b212b;color:#e6edf3;border:1px solid #2a323d;border-radius:7px;padding:5px 8px;font:inherit}
+  .sy-seg{border:1px solid #2a323d;border-radius:9px;padding:7px 9px;background:#161b22}
+  .sy-seg .t{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+  .sy-no{color:#4cc3a8;font-weight:700;font-family:"Songti SC",serif}
+  .sy-chip{font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid #2a323d;color:#8b96a5}
+  .sy-chip.add{color:#d9a441;border-color:rgba(217,164,65,.5);background:rgba(217,164,65,.08)}
+  .sy-img{font-size:11px;color:#4cc3a8}
+  .sy-mut{color:#8b96a5;font-size:11px}
+  `;
+  const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+
+  const panel = document.createElement('div'); panel.id = 'sy-panel';
+  panel.innerHTML = `
+    <div id="sy-hd"><b>🎬 噬渊·豆包投喂</b><span class="sp"></span>
+      <button id="sy-min" title="收起/展开">▁</button></div>
+    <div id="sy-body">
+      <div class="sy-row">
+        <button class="sy-btn" id="sy-demo">载入内置20段</button>
+        <button class="sy-btn g" id="sy-paste">粘贴源…</button>
+        <button class="sy-btn g" id="sy-img">📷 选图片文件夹</button>
+      </div>
+      <div class="sy-row">
+        <span class="sy-mut">预告片</span>
+        <select id="sy-mode">
+          <option value="mark">按每段标记</option>
+          <option value="all">全部加</option>
+          <option value="none">全部不加</option>
+        </select>
+        <span class="sy-mut" id="sy-cnt"></span>
+      </div>
+      <textarea id="sy-src" style="display:none;width:100%;height:110px;font-family:ui-monospace,monospace;font-size:11px" placeholder="粘贴 第1集_20段_全字段源.md 内容,然后点『解析』"></textarea>
+      <div class="sy-row" id="sy-srcrow" style="display:none">
+        <button class="sy-btn" id="sy-parse">解析</button>
+        <button class="sy-btn g" id="sy-cancel">取消</button>
+      </div>
+      <div id="sy-list" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="sy-mut">图片按文件名开头数字匹配段号(如 04_xx.png → 第4段)。配图/发送是 v0.1,失灵就 F12 看 CONFIG.SEL。</div>
+    </div>`;
+  document.body.appendChild(panel);
+
+  const $ = s => panel.querySelector(s);
+  function renderList() {
+    $('#sy-mode').value = MODE;
+    $('#sy-cnt').textContent = SEGS.length ? `共${SEGS.length}段` : '';
+    const list = $('#sy-list'); list.innerHTML = '';
+    if (!SEGS.length) { list.innerHTML = '<div class="sy-mut">点「载入内置20段」或「粘贴源」。</div>'; return; }
+    SEGS.forEach(s => {
+      const inc = MODE === 'all' ? true : MODE === 'none' ? false : s.trailer === '加';
+      const chip = inc ? '<span class="sy-chip add">预告片</span>' : '<span class="sy-chip">一镜</span>';
+      const hasImg = IMAGES[s.num] ? `<span class="sy-img" title="${IMAGES[s.num].name}">📷</span>` : '';
+      const row = document.createElement('div'); row.className = 'sy-seg';
+      row.innerHTML = `<div class="t"><span class="sy-no">第${s.num}段</span>《${s.title}》${chip}${hasImg}<span class="sp" style="flex:1"></span></div>
+        <div class="sy-row">
+          <button class="sy-btn g" data-act="fill">填入</button>
+          <button class="sy-btn g" data-act="copy">复制</button>
+          <button class="sy-btn" data-act="go">填入+发送</button>
+        </div>`;
+      row.querySelector('[data-act=fill]').onclick = () => fill(build(s));
+      row.querySelector('[data-act=copy]').onclick = () => { navigator.clipboard?.writeText(build(s)); toast('已复制 第' + s.num + '段'); };
+      row.querySelector('[data-act=go]').onclick = () => fillSend(s);
+      list.appendChild(row);
+    });
+  }
+  function reparse() { SEGS = parse(SOURCE); renderList(); }
+
+  $('#sy-demo').onclick = () => { SOURCE = DEFAULT_SOURCE; store.set('src', SOURCE); reparse(); toast('已载入内置20段'); };
+  $('#sy-paste').onclick = () => { $('#sy-src').style.display = 'block'; $('#sy-srcrow').style.display = 'flex'; $('#sy-src').value = SOURCE; };
+  $('#sy-cancel').onclick = () => { $('#sy-src').style.display = 'none'; $('#sy-srcrow').style.display = 'none'; };
+  $('#sy-parse').onclick = () => { SOURCE = $('#sy-src').value; store.set('src', SOURCE); $('#sy-cancel').click(); reparse(); toast('已解析'); };
+  $('#sy-mode').onchange = e => { MODE = e.target.value; store.set('mode', MODE); renderList(); };
+  $('#sy-min').onclick = () => panel.classList.toggle('min');
+  $('#sy-img').onclick = () => {
+    const p = document.createElement('input'); p.type = 'file'; p.multiple = true;
+    try { p.webkitdirectory = true; } catch (e) {}
+    p.accept = 'image/*';
+    p.onchange = () => {
+      IMAGES = {}; let n = 0;
+      for (const f of p.files) { if (!/\.(png|jpe?g|webp)$/i.test(f.name)) continue;
+        const mm = f.name.match(/^\s*0*(\d+)/); if (mm) { IMAGES[+mm[1]] = f; n++; } }
+      toast('匹配到 ' + n + ' 张配图'); renderList();
+    };
+    p.click();
+  };
+
+  // 拖动
+  (function () {
+    const hd = $('#sy-hd'); let sx, sy, ox, oy, drag = false;
+    hd.addEventListener('mousedown', e => { if (e.target.tagName === 'BUTTON') return; drag = true; sx = e.clientX; sy = e.clientY;
+      const r = panel.getBoundingClientRect(); ox = r.left; oy = r.top; e.preventDefault(); });
+    document.addEventListener('mousemove', e => { if (!drag) return;
+      panel.style.left = (ox + e.clientX - sx) + 'px'; panel.style.top = (oy + e.clientY - sy) + 'px';
+      panel.style.right = 'auto'; panel.style.bottom = 'auto'; });
+    document.addEventListener('mouseup', () => drag = false);
+  })();
+
+  reparse();
+  console.log('[噬渊·豆包投喂] 已加载 v0.1.0,解析出', SEGS.length, '段');
+})();
