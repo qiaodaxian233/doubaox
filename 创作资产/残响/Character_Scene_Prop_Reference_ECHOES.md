@@ -1,8 +1,24 @@
 # 《ECHOES》(残响) — Character · Scene · Prop Reference Sheet
 
 > **Style Lock:** HBO / Apple TV+ prestige sci-fi drama. Photoreal live-action cinematography. ARRI Alexa 65 look. Anamorphic lenses. Fine film grain. NOT animation, NOT anime, NOT CG-rendered.
-> Use these descriptions to generate consistent reference images (portraits / environments / objects). Lock the results, then reference them in every storyboard prompt via multi-image face/scene lock.
+> **Built for YouTube / international release.** Use these descriptions to generate consistent reference images (portraits / environments / props). Lock the results, then reference them in every storyboard prompt via multi-image face/scene lock.
 > Companion files: `Ep01_22_Storyboard_Prompts_ECHOES.md` · `世界圣经_残响.md` · `第1集剧本_残响.md`
+
+---
+
+## CASTING & VISUAL PRINCIPLES (read first)
+
+**1. Cast authentically East Asian.** This is a Chinese-authored story with Chinese-named characters (Shen Du, Jiang Lin, Shen Zhi). Keep the cast East Asian — it is true to the story, visually distinctive, and "elevated East Asian sci-fi / thriller" travels internationally (the Squid Game / Three-Body / Pachinko lineage). Internationalize through **English voice / subtitles**, NOT by changing faces.
+
+**2. Actor-faces, not idol-faces.** Prestige TV is built on characterful, lived-in, real faces — not magazine-smooth idol / influencer / model looks. This is also a **technical advantage for AI generation: distinctive, characterful faces lock far more reliably across shots; generic-pretty faces face-swap and drift.**
+- **DO prompt:** characterful, lived-in, weathered, distinctive features, real skin texture with pores, naturalistic, slightly asymmetrical, expressive, gravitas.
+- **AVOID prompting:** handsome, beautiful, flawless, perfect, idol, model, smooth/poreless skin, symmetrical-pretty, glamorous.
+
+**3. Photoreal everything.** Real-looking people, in real-looking spaces, with real-looking objects. No CG-render gloss, no anime, no game-engine plastic — applies to faces, sets, AND props equally.
+
+**4. Voice / language for reach.** Faces stay East Asian; international reach comes from **English VO or high-quality English subtitles**. Shen Du's data-form "data-voice" sounds more prestige in English.
+
+**5. Thumbnail frames (high click-through):** Seg 4 — Shen Du's extreme close-up (joy freezing into horror). Seg 20 — the killer's hand on the grieving daughter's shoulder. Both carry instant emotional conflict; both make strong YouTube thumbnails.
 
 ---
 
@@ -12,15 +28,17 @@
 
 **Role:** Protagonist. Consciousness-upload scientist. The man who becomes the ghost.
 
-**Physical:** 46 years old. Lean, slightly gaunt — the body of someone who forgets to eat. East Asian male. Defined cheekbones, hollow under the eyes. Fine lines at the corners of his eyes, not from smiling — from years of staring at screens. Black hair with premature grey streaks, slightly unkempt, pushed back but falling loose. Bloodshot eyes, dark brown verging on black. Natural skin — slightly sallow from sleep deprivation, visible pores, no idealization. This is a real man under real fluorescent light.
+**Casting:** East Asian male, late 40s. An **actor-face, NOT an idol-face** — gravitas over good looks. A face that reads "brilliant, exhausted, haunted" before he speaks. Character-actor energy, not leading-man-pretty. Do NOT generate young or conventionally handsome — it drains the tragedy.
 
-**Wardrobe:** Dark charcoal / slate-grey near-future lab coat over a simple crew-neck undershirt. Clean lines, no logos, no flashy tech-wear. The fabric has weight and texture — woven, not synthetic-shiny. Think: what a real bleeding-edge scientist would wear if the lab had a quiet design sensibility. Understated. Functional.
+**Physical:** 46. Lean, slightly gaunt — a body that forgets to eat. Defined cheekbones, hollows under the eyes. Fine lines etched at the corners of the eyes — not from smiling, from years at screens. Black hair with premature grey, unkempt, pushed back but falling loose. Bloodshot dark-brown eyes. **Real, lived-in skin** — slightly sallow, visible pores, faint stubble, characterful and slightly asymmetrical. No idealization. A real man under real fluorescent light.
 
-**Presence:** Quiet authority. Moves slowly, deliberately. A man carrying the weight of what he's built. When afraid, he goes still — not theatrical, just stops. When dying, he doesn't scream — he crawls.
+**Wardrobe:** Dark charcoal / slate-grey near-future lab coat over a plain crew-neck. Clean lines, no logos, no flashy tech-wear. Woven fabric with weight and texture — not synthetic-shiny. Understated, functional.
 
-**Lock Notes:** Consistent face across all human-world segments (Seg 1–10). No glowing eyes, no facial cracks, no cyberpunk augmentation. He looks *normal* — that's the point.
+**Presence:** Quiet authority. Slow, deliberate movements. A man carrying the weight of what he built. When afraid, he goes still — not theatrical, just stops. When dying, he doesn't scream — he crawls.
 
-**Negative:** No anime features. No plastic/glossy skin. No cyberpunk implants. No exaggerated expressions. No young-looking — he must read as a tired, brilliant, middle-aged man.
+**Lock Notes:** Consistent face across all human-world segments (Seg 1–10). No glowing eyes, no facial cracks, no augmentation. He looks *normal* — that's the point. His Seg 4 close-up (joy → horror) is the show's signature frame and prime thumbnail.
+
+**Negative:** anime features, plastic/glossy skin, idol/model face, flawless symmetry, smooth poreless skin, young, conventionally handsome, cyberpunk implants, exaggerated expressions, glamour lighting.
 
 ---
 
@@ -28,33 +46,35 @@
 
 **Role:** The digital ghost. What Shen Du becomes after the incomplete upload.
 
-**Form:** A humanoid silhouette composed of flowing cyan (teal-blue) light-filaments and data streams. Semi-transparent. Flickering. Unstable. No clear facial features — only the outline of a human shape suggested by flowing data. When he "opens his eyes," it is a single cold point of light at the center of the silhouette — not a face.
+**Casting:** N/A — **no human face.** He is a silhouette of light. Actively AVOID generating any recognizable human face here.
 
-**Color:** Cyan / teal-blue primary. Faint magenta data accents. Set against deep-space black void.
+**Form:** A humanoid silhouette of flowing cyan (teal-blue) light-filaments and data streams. Semi-transparent. Flickering. Unstable. No clear facial features — only the outline of a human shape suggested by flowing data. When he "opens his eyes," it is a single cold point of light at the center of the silhouette — never a face.
 
-**Behavior:** Flickers and destabilizes when stressed (edges blur, filaments scatter). Reconstitutes slowly. Never fully solid. When flooded with data (learning), he flares brighter and almost shatters. When calm, a quiet, lonely glow.
+**Color:** Cyan / teal-blue primary. Faint magenta data accents. Against deep-space black void.
 
-**Scale:** Human-sized within the server interior. Dwarfed by the void.
+**Behavior:** Flickers and destabilizes when stressed (edges blur, filaments scatter). Reconstitutes slowly. Never fully solid. Flares when flooded with data, but never blooms to white.
 
-**Lock Notes:** RESTRAINT IS EVERYTHING. He is not a glowing god — he is a flickering ghost barely holding together. No explosion of light, no lens flares, no particle-storm spectacle. The less he glows, the more he hurts.
+**Lock Notes:** RESTRAINT IS EVERYTHING. Not a glowing god — a flickering ghost barely holding together. No flares, no particle-storm spectacle. The less he glows, the more he hurts.
 
-**Negative:** No solid flesh body. No clear human face. No horror / ghost / skeleton. No green Matrix digital rain. No cyberpunk neon excess. No over-bright bloom or flare. No Tron suit.
+**Negative:** solid flesh body, any human face, horror/ghost/skeleton, green Matrix rain, cyberpunk neon excess, over-bright bloom, lens flare, Tron suit.
 
 ---
 
 ### JIANG LIN (江临)
 
-**Role:** Apprentice. The killer who didn't mean to kill. Morally grey — not a villain.
+**Role:** Apprentice. The killer who didn't mean to kill. Morally grey — NOT a villain.
 
-**Physical:** 34 years old. East Asian male. Slightly broader than Shen Du — more physical presence. Sharp jaw, strong brow. Handsome in a hard, sleepless way. Light stubble shadow. Dark hair, shorter and neater than Shen Du's. Dark intense eyes with the fevered gleam of a true believer.
+**Casting:** East Asian male, mid 30s. **Crucially: a trustworthy, likeable face — NOT a villain face.** The audience must want to believe him, even like him, early on — that is what makes the betrayal land. Hard-handsome and intense is fine (he's the polished protégé), but real and characterful, not a soft idol. **The horror is that he looks like a good man.**
 
-**Wardrobe:** Dark navy / black high-collar research jacket. More structured and tailored than Shen Du's — he is the polished protégé. Clean, severe, no ornamentation. At the press conference (Seg 18): a dark formal suit, composed but slightly hollow.
+**Physical:** 34. Slightly broader than Shen Du — more physical presence. Sharp jaw, strong brow. Light stubble shadow. Dark hair, shorter and neater than Shen Du's. Dark, intense eyes with the fevered gleam of a true believer. Lived-in, real skin with texture.
 
-**Presence:** Restless conviction. Speaks with his hands. Leans forward. When he freezes after the push (Seg 6–7), the stillness is terrifying because he was never still before. When he comforts Shen Zhi at the memorial (Seg 20), his gentleness is genuine — and that's what makes it unbearable.
+**Wardrobe:** Dark navy / black high-collar research jacket — tailored, severe, no ornamentation. Press conference (Seg 18): a dark formal suit, composed but slightly hollow.
 
-**Lock Notes:** Consistent face across lab segments (4–9), press conference (18), memorial (20). Multi-image face lock critical. He must NOT look like a villain — he must look like someone you'd trust.
+**Presence:** Restless conviction. Speaks with his hands, leans forward. His stillness after the push (Seg 6–7) is terrifying because he was never still before. His gentleness comforting Shen Zhi (Seg 20) is genuine — and that's what's unbearable.
 
-**Negative:** No anime features. No villain coding (no scars, no sinister lighting on his face). No exaggerated menace. The horror is that he looks like a good man.
+**Lock Notes:** Consistent face across lab (4–9), press conference (18), memorial (20). Multi-image face lock critical.
+
+**Negative:** villain coding (scars, sinister under-lighting, dark-circle caricature), overt menace, anime features, plastic skin, soft-idol face, flawless symmetry.
 
 ---
 
@@ -62,119 +82,117 @@
 
 **Role:** Daughter. 19. The human anchor. The reason Shen Du wants to become human again.
 
-**Physical:** 19 years old. East Asian female. Slender, delicate but not fragile. Resembles her father around the eyes — the same dark, perceptive gaze, but younger, softer. Clear natural skin, no makeup at the memorial. Red-rimmed eyes from crying.
+**Casting:** East Asian young woman, late teens. A **natural, real teenager face — NOT a glam / influencer / idol look.** No makeup, no styling. She should look like a real grieving 19-year-old, not a pretty actress playing one. Resembles her father around the eyes.
 
-**Wardrobe:** Memorial: simple white / off-white mourning clothes. Clean, unadorned. Near-future but timeless — could be any era's grief. No jewelry, no accessories.
+**Physical:** 19. Slender, delicate but not fragile. Clear natural skin, no makeup. Large dark eyes — the same perceptive gaze as her father, but younger, softer. Red-rimmed from crying. Real, soft, vulnerable.
 
-**Presence:** Quiet grief. Shoulders drawn inward. When she looks up at Jiang Lin, there is raw trust — she doesn't know what she's leaning into. She is the only source of human warmth in the entire episode.
+**Wardrobe:** Memorial: simple white / off-white mourning clothes, unadorned, timeless. No jewelry, no accessories.
 
-**Lock Notes:** NEW FACE — only appears in segments 19–20. Multi-image face lock essential. Camera must be STABLE on her (no fast cuts in Seg 19). The prestige look demands her face read clearly and emotionally.
+**Presence:** Quiet grief, shoulders drawn inward. When she looks up at Jiang Lin, there is raw, instinctive trust — she doesn't know what she's leaning into. She is the only source of human warmth in the entire episode.
 
-**Negative:** No glamour lighting. No sexualization. No mature-ification. She is a grieving teenager, photographed like a real person in real pain.
+**Lock Notes:** NEW FACE — only Seg 19–20. Multi-image face lock essential. STABLE camera (no fast cuts) in Seg 19 so her face reads clearly.
+
+**Negative:** glamour lighting, makeup, sexualization, mature-ification, idol/influencer face, anime features, flawless/smooth skin.
 
 ---
 ---
 
 ## SCENES / ENVIRONMENTS
 
+> **Shoot-real principle:** every space should read like a real location or a real built set under real, motivated light — not a CG render, not a matte painting, not a game level. Photoreal, practical detail, naturalistic lighting.
+
 ### DU CONSCIOUSNESS LABORATORY — 2099 (渡氏意识实验室)
 
 **Used in:** Segments 1–10 (entire Act 1)
 
-**Architecture:** A single vast room. Oppressively high ceiling. Circular neural interface rig at center with an empty scanning chair. Three curved holographic display walls surrounding the rig. The space is white, grey, steel, glass — architectural minimalism taken to an unsettling extreme. Designed to make one person feel very small. A personal terminal sits in one corner. Server racks line one wall (including the critical backup server in the corner). Metal floor with subtle reflection. Cable routing visible but orderly.
+**Architecture:** A single vast room. Oppressively high ceiling. Circular neural interface rig at center with an empty scanning chair. Three curved holographic display walls surrounding the rig. White, grey, steel, glass — architectural minimalism taken to an unsettling extreme, designed to make one person feel very small. A personal terminal in one corner. Server racks line one wall (including the critical backup server in the corner). Metal floor with subtle reflection. Cable routing visible but orderly.
 
 **Lighting:** Cold surgical white overhead (primary). Cyan glow from holographic displays (secondary). No warm light anywhere. Motivated, naturalistic. Deep shadows in corners. The lighting never flatters.
 
-**Color Palette:** High-key whites, steel greys, deep blacks in shadows. The only color is cyan screen glow. When deletion activates: red warning light bleeds in. When upload activates: red flips to cyan.
+**Color Palette:** High-key whites, steel greys, deep blacks. The only color is cyan screen glow. Deletion activates red warning light; upload flips red to cyan.
 
 **Atmosphere:** Clinical. Oppressive calm. A cathedral built for one idea. The silence has weight.
 
-**Negative:** Not cyberpunk (no neon, no rain, no grime). Not Star Trek sleek. Not a bunker. Think: Apple Store meets particle physics lab meets church.
-
----
+**Negative:** cyberpunk neon, rain, grime, Star Trek sleek, bunker, CG-render set, matte painting, game level. (Think: Apple Store meets particle-physics lab meets church.)
 
 ### DATA REALM — Server Interior (数据界 · 服务器内部)
 
 **Used in:** Segments 11–16
 
-**Space:** Abstract digital space inside a single backup server. NOT a grand digital cathedral — it is cramped, dark, claustrophobic. Narrow corridors of flowing data-channels. The walls are streams of data, not solid surfaces.
+**Space:** Abstract digital space inside a single backup server. NOT a grand digital cathedral — cramped, dark, claustrophobic. A coffin made of data. Narrow corridors of flowing data-channels. Walls are streams of data, not solid surfaces.
 
-**Lighting:** The ONLY light source is the cyan data-glow itself. Everything else is deep-space black void. When the format-countdown activates: red countdown text is the only other light. When the formatting wave comes: blinding cold-white erasure light that devours everything.
+**Lighting:** The ONLY light source is the cyan data-glow. Everything else is deep-space black. Format-countdown adds red text; the formatting wave is blinding cold-white erasure light.
 
-**Color Palette:** Deep-space black. Cyan/teal data-light. Faint magenta accents. Red countdown digits. White formatting wave.
+**Color Palette:** Deep-space black. Cyan/teal data-light. Faint magenta accents. Red countdown. White formatting wave.
 
-**Atmosphere:** Claustrophobic → desperate → barely-escaped. The void is not beautiful — it is terrifying. There is nothing here except him and the countdown.
+**Atmosphere:** Claustrophobic → desperate → barely-escaped. The void is terrifying, not beautiful. Scale opens dramatically when he escapes to the wider network (coffin → ocean).
 
-**Scale Shift:** When Shen Du escapes to the wider network (end of Seg 16 → Seg 17), the space opens dramatically — from coffin to ocean.
-
-**Negative:** No green Matrix rain. No Tron grid floors. No cyberpunk neon cityscapes. No horror / organic / flesh walls. Restraint.
-
----
+**Negative:** green Matrix rain, Tron grid floors, cyberpunk neon cityscapes, horror/organic/flesh walls, grand cathedral, bloom excess.
 
 ### 2099 CITY — NIGHT (2099 城市夜景)
 
 **Used in:** Segments 17–18, 21–22
 
-**Architecture:** A near-future megalopolis. Clean, ordered, algorithm-managed. Tall buildings in uniform geometric clusters. No chaos, no grime, no neon ad-overload. Glass, concrete, soft white/blue municipal lighting. Surveillance cameras and sensors everywhere — integrated into architecture, not dystopian-obvious, which makes it worse.
+**Architecture:** A near-future megalopolis. Clean, ordered, algorithm-managed. Uniform geometric tower clusters. No chaos, no grime, no neon ad-overload. Glass, concrete, soft white/blue municipal lighting. Surveillance cameras and sensors everywhere — integrated into architecture, not dystopian-obvious, which makes it worse.
 
 **Lighting:** Cool blue municipal LED. Vehicle light-trails. Ubiquitous public display screens (cold white/blue glow).
 
 **Color Palette:** Steel blue, concrete grey, cold white. No warm tones.
 
-**Atmosphere:** Ordered. Beautiful in a sterile way. A city that runs perfectly and has no soul. When Shen Du's "eyes" awaken across the city (Seg 21), the surveillance cameras and screens flicker with cold light — the city doesn't change, but suddenly you realize it's watching.
+**Atmosphere:** Ordered. Beautiful in a sterile way. A city that runs perfectly and has no soul. When Shen Du's "eyes" awaken (Seg 21), cameras and screens flicker with cold light — the city doesn't change, but you realize it's watching.
 
-**Negative:** Not Blade Runner (no rain, no neon overload, no flying cars, no decay). Not utopian-shiny. Not dystopian-grimy. The uncanny valley of urban planning.
-
----
+**Negative:** Blade Runner neon, rain, flying cars, decay, grime, utopian-shiny, dystopian-grimy, CG-render cityscape.
 
 ### MEMORIAL HALL (追思会现场)
 
 **Used in:** Segments 19–20
 
-**Architecture:** Large, minimalist memorial hall. Clean lines, muted materials — stone, wood, brushed metal. Shen Du's portrait on a simple stand. White flowers. The space is too big for one girl kneeling alone — the emptiness is the point.
+**Architecture:** Large, minimalist memorial hall. Clean lines, muted materials (stone, wood, brushed metal). Shen Du's portrait on a simple stand. White flowers. The space is too big for one girl kneeling alone — the emptiness is the point.
 
-**Lighting:** Overall cold institutional lighting. EXCEPTION: a single subtle warm light falls on Shen Zhi — the ONLY warm light in the entire episode. When Jiang Lin steps into frame, his shadow begins to eat the warmth.
+**Lighting:** Cold institutional overall. EXCEPTION: a single subtle warm light falls on Shen Zhi — the ONLY warm light in the entire episode. When Jiang Lin steps into frame, his shadow begins to eat the warmth.
 
-**Color Palette:** Cold institutional grey/white. The warm accent on Shen Zhi is muted gold — not Hollywood-warm, just human. Jiang Lin brings cold back.
+**Color Palette:** Cold institutional grey/white. The warm accent on Shen Zhi is muted gold — human, not Hollywood-warm. Jiang Lin brings cold back.
 
 **Atmosphere:** Grief. Emptiness. The institutional space doesn't care that someone died.
 
-**Negative:** Not ornate. Not religious. Not dark / gothic. Grief in prestige TV is bright, clean, and empty.
+**Negative:** ornate, religious iconography, dark/gothic, CG-render set. (Grief in prestige TV is bright, clean, and empty.)
 
 ---
 ---
 
 ## KEY PROPS
 
+> **Real-object principle:** every prop should look manufactured and real — a real device under real light — not a glowing sci-fi movie prop, not a CG-rendered asset.
+
 ### Neural Interface Rig (环形神经接驳台)
-Ring-shaped apparatus at the lab's center. Brushed steel, matte black joints. A single scanning chair at its core — ergonomic, clinical. Overhead: articulated arms with scanning arrays. Currently empty. Under surgical white light, it looks like an altar. Scale: large enough to dominate the room.
+Ring-shaped apparatus at the lab's center. Brushed steel, matte black joints. A single ergonomic scanning chair at its core. Overhead: articulated arms with scanning arrays. Currently empty. Under surgical white light, it looks like an altar. Large enough to dominate the room. Real industrial-design feel — not a movie prop.
 
 ### Consciousness Map Hologram (意识神经图谱)
-Displayed on the central curved screen. A slowly rotating 3D neural network — millions of interconnected nodes in cyan light. Clean, elegant, scientific. Readout in minimal sans-serif: "COMPLETENESS 100.0%". Not a flashy sci-fi HUD — restrained, real-feeling data visualization.
+On the central curved screen: a slowly rotating 3D neural network — millions of interconnected nodes in cyan light. Clean, elegant, scientific. Readout in minimal sans-serif: "COMPLETENESS 100.0%". Restrained, real-feeling data visualization — NOT a flashy sci-fi HUD.
 
 ### Wangchuan Protocol Interface (忘川协议界面)
-The main control terminal's software interface. Two states:
-- **Deletion:** Red text — "WANGCHUAN PROTOCOL · SOURCE DATA DESTRUCTION · 0%" with progress bar. Red warning light spills into the room.
-- **Upload:** Cyan text — "WANGCHUAN PROTOCOL · CONSCIOUSNESS UPLOAD · INITIATED · 11" with countdown. Cyan replaces red.
-Minimal UI. No sci-fi HUD clutter. A real terminal interface.
+Main terminal software, two states:
+- **Deletion:** Red text — "WANGCHUAN PROTOCOL · SOURCE DATA DESTRUCTION · 0%" + progress bar. Red warning light spills into the room.
+- **Upload:** Cyan text — "WANGCHUAN PROTOCOL · CONSCIOUSNESS UPLOAD · INITIATED · 11" + countdown. Cyan replaces red.
+Minimal UI, real terminal — no HUD clutter.
 
 ### Scanning Probe (扫描探头)
-Small, precise device that mounts to the temple. Connected to the rig by a thin cable. Matte black, medical-grade. When Shen Du presses it to his own temple in desperation, it is not dramatic-looking — a small, clinical thing that happens to be the doorway between life and digital existence.
+Small, precise temple-mount device on a thin cable from the rig. Matte black, medical-grade. When Shen Du presses it to his own temple, it's not dramatic-looking — a small clinical thing that happens to be the doorway between life and digital existence.
 
 ### Backup Server Rack (备用服务器)
-Standard server rack in the lab's corner. Unremarkable — easy to overlook. Grey metal, orderly cable bundles, rows of indicator LEDs. One LED blinks steadily: blue-white, small, patient. This is the most important object in the episode, and it looks like nothing. After the lights go out: the blinking LED is the only light in frame. A heartbeat.
+Standard server rack in the lab's corner — unremarkable, easy to overlook. Grey metal, orderly cable bundles, rows of indicator LEDs. One LED blinks steadily: blue-white, small, patient. The most important object in the episode, and it looks like nothing. After the lights go out, it's the only light in frame. A heartbeat.
 
 ### Memorial Portrait (沈渡遗像)
-Holographic or printed portrait of Shen Du at the memorial. Formal, composed — the public face of a great scientist. It doesn't look like the exhausted, bloodshot man from the lab. The gap between portrait and reality is part of the tragedy.
+Formal, composed portrait of Shen Du at the memorial — the public face of a great scientist. It does NOT look like the exhausted, bloodshot man from the lab. The gap between portrait and reality is part of the tragedy.
 
 ### Surveillance Camera (监控摄像头)
-Standard municipal camera. Small, architecturally integrated. When Shen Du's consciousness "connects" to it, the lens catches a faint cyan reflection — subtle, almost imperceptible. By Segment 21: hundreds across the city simultaneously flicker with that same faint light. The birth of Zhulong's (烛龙) thousand eyes.
+Standard municipal camera — small, architecturally integrated, easy to miss. When Shen Du "connects," the lens catches a faint cyan reflection — subtle, almost imperceptible. By Seg 21, hundreds across the city flicker with that same faint light. The birth of Zhulong's (烛龙) thousand eyes.
 
 ---
 
 > **Reference Image Generation Guide:**
-> - **Characters:** Generate front / three-quarter / profile portraits from descriptions above. Lock faces.
-> - **Scenes:** Generate wide-angle environment references from descriptions above. Lock environments.
-> - **Props:** Generate individual prop reference images. Lock for continuity.
-> - In storyboard prompts, attach these as: Img1 = character ref, Img2 = scene ref, Img3 = prop ref (if needed).
-> - Style across all: HBO / Apple TV+ photoreal. No animation. No CG look.
+> - **Characters:** Generate front / three-quarter / profile portraits. Use the "actor-face not idol-face" language above. Lock faces. (Data-form: light-silhouette only, no face.)
+> - **Scenes:** Generate wide-angle environment references — photoreal, real-location feel. Lock environments.
+> - **Props:** Generate individual prop references — real-object feel. Lock for continuity.
+> - In storyboard prompts, attach as: Img1 = character ref, Img2 = scene ref, Img3 = prop ref (if needed).
+> - Style across all: HBO / Apple TV+ photoreal live-action. East Asian cast. No animation. No CG look. No idol faces.
