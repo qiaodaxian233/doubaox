@@ -24,6 +24,50 @@
 
 ---
 
+## CHARACTER REFERENCE-SHEET PROMPTS · 角色定妆三视图(锁脸用)
+
+> **【中文·先看这个】** "人物参考图" = **干净三视图**(正面 / 3-4 侧 / 侧面)+ **中性灰背景** + **均匀打光** + 中性表情,目的是让 AI 把脸抓准、锁住。**别用戏剧化暗光场景图当锁脸基准**(脸一半在阴影里锁不准)。锁好脸之后,出分镜时再上电影感暗光。先锁**沈渡**(主角、要和江临区分开),再江临、沈知、数据态。每个出 1 张,存为该角色脸卡。
+
+**① SHEN DU — Human(沈渡)**【中文:往"更老更瘦更白发更憔悴"推,跟 34 岁的江临拉开,别像同一个人】
+```
+Character reference sheet / turnaround — SHEN DU (human), 《ECHOES》.
+The SAME East Asian man in three consistent views on ONE sheet: front, 3/4, profile. Neutral expression. Neutral mid-grey seamless studio background. Soft even clean studio lighting — IDENTITY reference for face-locking, NOT a cinematic scene. Identical face, hair, wardrobe across all views.
+Appearance: 46-year-old East Asian male, clearly middle-aged, lean and slightly gaunt, defined cheekbones, hollows under the eyes, fine lines, black hair with prominent premature grey streaks, slightly unkempt, tired bloodshot dark eyes, faint stubble, sallow real skin with visible pores. A weathered character-actor face with gravitas. Visibly OLDER and more worn than a man in his mid-30s.
+Wardrobe: dark charcoal / slate-grey near-future lab coat over a plain crew-neck, understated.
+Style: photoreal live-action, HBO/Apple TV+ prestige, ARRI Alexa 65, fine film grain, natural skin, 4K.
+Negative: multiple different people, inconsistent face between views, young, handsome, idol/model face, flawless poreless skin, glamour, anime, cartoon, CG-rendered, plastic skin, dramatic moody lighting, text, watermark.
+```
+
+**② JIANG LIN — 江临**【中文:可信的好人脸、不是反派脸;比沈渡年轻】
+```
+Character reference sheet / turnaround — JIANG LIN, 《ECHOES》.
+The SAME East Asian man in three consistent views on ONE sheet: front, 3/4, profile. Neutral expression. Neutral mid-grey seamless studio background. Soft even clean studio lighting — IDENTITY reference for face-locking, NOT a scene. Identical face, hair, wardrobe across all views.
+Appearance: 34-year-old East Asian male (mid 30s), slightly broad build, sharp jaw, strong brow, light stubble, dark neat hair, dark intense eyes. Lived-in real skin with pores. A characterful actor-face — trustworthy and likeable, NOT an idol/model face, NOT a villain face.
+Wardrobe: dark navy / black high-collar research jacket, tailored, no ornamentation.
+Style: photoreal live-action, HBO/Apple TV+ prestige, ARRI Alexa 65, fine film grain, natural skin, 4K.
+Negative: multiple different people, inconsistent face between views, idol/model face, flawless poreless skin, symmetrical-pretty, glamour, anime, cartoon, CG-rendered, plastic skin, villain coding (scars/sinister lighting), dramatic moody lighting, exaggerated expression, text, watermark.
+```
+
+**③ SHEN ZHI — 沈知**【中文:真实少女、不化妆、不性感化;眉眼像父亲】
+```
+Character reference sheet / turnaround — SHEN ZHI, 《ECHOES》.
+The SAME East Asian young woman in three consistent views on ONE sheet: front, 3/4, profile. Neutral expression. Neutral mid-grey seamless studio background. Soft even clean studio lighting — IDENTITY reference for face-locking, NOT a scene. Identical face, hair, wardrobe across all views.
+Appearance: 19-year-old East Asian young woman, slender, delicate but not fragile, clear natural skin with NO makeup, large dark eyes resembling her father's, soft and vulnerable. A real teenager — NOT a glam/influencer/idol look.
+Wardrobe: simple off-white / pale clothing, unadorned, no jewelry.
+Style: photoreal live-action, HBO/Apple TV+ prestige, ARRI Alexa 65, fine film grain, natural skin, 4K.
+Negative: multiple different people, inconsistent face between views, makeup, glamour lighting, sexualization, mature-ification, idol/influencer face, flawless smooth skin, anime, cartoon, CG-rendered, dramatic moody lighting, text, watermark.
+```
+
+**④ SHEN DU — Data Form(数据态)**【中文:不是人、不是脸,是青色光人形三视图,黑底,无五官】
+```
+Reference sheet / turnaround — SHEN DU DATA FORM, 《ECHOES》. NOT a person, NOT a face.
+A humanoid silhouette made of flowing cyan (teal-blue) light-filaments and data streams, semi-transparent and faintly flickering. Three consistent views on ONE sheet: front, 3/4, profile of the SAME light-silhouette, on a deep-space black background. NO facial features — only the human outline and flowing data suggest the shape. Restrained glow, never blooming to white.
+Style: prestige sci-fi abstract digital form, cyan on black, fine film grain, 4K.
+Negative: human face, facial features, eyes, solid flesh body, person, horror/skeleton/ghost, green Matrix rain, cyberpunk neon excess, over-bright bloom, lens flare, Tron suit, text, watermark.
+```
+
+---
+
 ## CHARACTERS · 人物
 
 ### SHEN DU — Human Form (沈渡 · 人间态)
