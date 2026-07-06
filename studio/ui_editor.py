@@ -1746,6 +1746,14 @@ class EpisodesView(QFrame):
         copy_vid = QPushButton("📋 复制视频 Prompt")
         copy_vid.clicked.connect(lambda: self._copy_video_prompt(shot))
         vid_row.addWidget(copy_vid)
+        copy_omni = QPushButton("📋 全能参考视频Prompt")
+        copy_omni.setToolTip(
+            "Seedance 2.0 全能参考(@素材指认)格式:\n"
+            "@图1=分镜/首帧 → 之后按本镜引用的角色依次编号 → 最后场景图。\n"
+            "复制后进豆包/即梦「全能参考」入口,按 @图N 顺序上传素材再粘贴。"
+        )
+        copy_omni.clicked.connect(lambda: self._copy_omni_video_prompt(shot))
+        vid_row.addWidget(copy_omni)
         gen_vid = QPushButton("🎬 用豆包生视频")
         gen_vid.setObjectName("Accent")
         gen_vid.setToolTip("复制 + 打开豆包(此镜单独生成 ≤10s 视频片段)")
@@ -1849,6 +1857,53 @@ class EpisodesView(QFrame):
         text = self._build_video_prompt(shot)
         QApplication.clipboard().setText(text)
         self.log.emit(f"已复制分镜 #{shot.number} 的视频 prompt ({len(text)} 字)")
+
+    # ---- Seedance 2.0 全能参考(@素材指认) ----
+    # 多图必须用 @图N 指认职责,模型才不会把几张图糊在一起。
+    # 槽位顺序:图1=分镜/首帧参考 → 本镜引用的角色依次 → 场景图(若本镜绑定了场景)。
+    def _build_omni_video_prompt(self, shot: Shot) -> str:
+        chars = ST.load_characters(self.pid)
+        scenes = ST.load_scenes(self.pid)
+        scene = next((s for s in scenes if s.id == shot.scene_id), None)
+
+        at_parts, n = [], 1
+        at_parts.append(f"@图{n} 参考分镜构图与镜头顺序节奏"); n += 1
+        for cid in shot.character_ids:
+            c = next((x for x in chars if x.id == cid), None)
+            if c:
+                at_parts.append(f"@图{n} 锁定角色 {c.name}(五官/发型/服饰一致)"); n += 1
+        if scene:
+            at_parts.append(f"@图{n} 参考场景 {scene.name}(按本段地点与光线)"); n += 1
+        at_line = ",".join(at_parts) + "。"
+
+        # 一镜到底更稳、不容易崩脸;要快切蒙太奇在自定义里改成"电影预告片(可快切)"
+        clip = "10秒一镜到底(舒缓推进,不要快切)"
+        style = (scene.visual_style if scene and scene.visual_style
+                 else "电影级国漫风格动画CG")
+        head = f"{style}、电影级动画质感,动态运镜、{clip},16:9,8K。"
+
+        lines = [at_line, head]
+        story = shot.action or ""
+        if story: lines.append(f"画面:{story}")
+        lens = f"{shot.shot_size}{shot.camera_movement}"
+        if shot.visual_style_note: lens += f",{shot.visual_style_note}"
+        lines.append(f"镜头:{lens}")
+        if shot.lighting: lines.append(f"光影氛围:{shot.lighting}")
+        if shot.transition_anchor:
+            lines.append(f"结束姿态:{shot.transition_anchor}(为下一镜起始姿态)。")
+        lines.append(
+            "约束:画面不要出现任何摄影机/录像设备/取景框;不要写实真人脸;"
+            "不要乱码、错误文字、水印 logo;不要低幼卡通/欧美魔幻风/机甲赛博风;"
+            "不要人物崩坏、多余手指肢体、重复画面。16:9。")
+        return "\n".join(lines)
+
+    def _copy_omni_video_prompt(self, shot: Shot):
+        text = self._build_omni_video_prompt(shot)
+        QApplication.clipboard().setText(text)
+        n_at = text.split("\n", 1)[0].count("@图")
+        self.log.emit(
+            f"已复制分镜 #{shot.number} 的全能参考 prompt ({len(text)} 字,{n_at} 个@素材槽);"
+            f"进 Seedance 2.0「全能参考」按 @图N 顺序传图再粘贴,角色匹配度拉 80-100%")
 
     def _gen_shot_image(self, shot: Shot):
         text = self._build_image_prompt(shot)
